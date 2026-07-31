@@ -82,6 +82,7 @@ INPUT_SKIP_DIRS = {
     "gpu-wiki",
     "reference-projects",
     "skills",
+    "D:\\atrex-campaign-data\\progress",
     # Plans and humanize state are local campaign inputs for the agent, never
     # runtime inputs for the command executing in the GPU pod.  In particular,
     # preserved implementation patches can be large enough to push agate's
@@ -111,6 +112,10 @@ INPUT_SKIP_PATHS = {
     "test_triton_dot.py",
     "test_triton_dot2.py",
     "valid.py",
+    # Controller outputs and process state are host-side campaign artifacts.
+    "submission.json",
+    "orchestrator.log",
+    "orchestrator.pid",
 }
 INPUT_SKIP_SUFFIXES = {
     ".pyc", ".pyo", ".ncu-rep", ".att", ".pftrace", ".otf2",
@@ -302,7 +307,12 @@ def _declared_candidate_sources(workspace: Path) -> set[str]:
 
 def _evaluation_input_paths(workspace: Path) -> frozenset[str]:
     """Return only files required by the immutable evaluator."""
-    return frozenset(set(EVALUATION_INPUT_PATHS) | _declared_candidate_sources(workspace))
+    selected = set(EVALUATION_INPUT_PATHS) | _declared_candidate_sources(workspace)
+    # Supervisor installs this compatibility shim only for the duration of an
+    # executor session. Keep it in the selective evaluator bundle when present.
+    if (workspace / "sitecustomize.py").is_file():
+        selected.add("sitecustomize.py")
+    return frozenset(selected)
 
 
 def _candidate_runtime_input_paths(workspace: Path) -> set[str]:
@@ -1589,6 +1599,16 @@ def main(argv: list[str] | None = None) -> int:
     typed_limitation: str | None = None
     if args.dispatch_signatures:
         gateway_kind = "dev"
+    elif (workspace / "sitecustomize.py").is_file() and gateway_kind in TYPED_KINDS:
+        # Typed run/profile requests cannot carry the supervisor's temporary
+        # import compatibility module. Preserve the shim contract through the
+        # dev transport, which uploads the selective workspace bundle.
+        typed_limitation = "workspace sitecustomize.py requires dev"
+        print(
+            f"[sandbox] {gateway_kind} interface unsupported ({typed_limitation}); using dev",
+            file=sys.stderr,
+        )
+        gateway_kind = "dev"
     elif gateway_kind in TYPED_KINDS:
         if gateway_kind == "profile" and args.profile_level == "deep" and not args.kernel_regex:
             raise SystemExit("sandbox: --profile-level deep requires --kernel-regex")
@@ -1717,7 +1737,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             bundle_path = temp / "workspace.tar.gz.b64"
             bundle_path.write_text(bundle, encoding="ascii")
-        command_path.write_text("#!/usr/bin/env bash\nset -o pipefail\n" + command + "\n", encoding="utf-8")
+        command_prelude = "#!/usr/bin/env bash\nset -o pipefail\n"
+        # Supervisor may materialize a temporary sitecustomize.py in the
+        # uploaded workspace. Keep its scope local to this remote command while
+        # allowing evaluator subprocesses to inherit the compatibility module.
+        if (workspace / "sitecustomize.py").is_file():
+            command_prelude += 'export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"\n'
+        command_path.write_text(command_prelude + command + "\n", encoding="utf-8")
         collector_path.write_text(REMOTE_COLLECTOR, encoding="utf-8")
         outputs_path.write_text(json.dumps(output_cfg), encoding="utf-8")
         if runtime_bundle:

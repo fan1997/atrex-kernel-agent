@@ -25,3 +25,6 @@ kernel_opt_*/
 
 # Layer decomposition output created by orchestrator/optimize.py --layer
 layer_*/
+
+# Local Supervisor runtime output
+tools/supervisor-orchestrator.log
