@@ -34,10 +34,57 @@ controller facts, and interventions are stored outside the executor workspace un
 ├── raw-events.jsonl
 ├── trusted-facts.jsonl
 ├── activations/
+├── sessions/                  # exact base/effective Executor prompts per run
 ├── control/
 ├── guidance/
 └── state/
 ```
+
+## Supervisor role
+
+The strong model is a periodically activated senior campaign expert, not a replacement loop and not
+an iteration scheduler. The base AKA prompt remains authoritative for the exact clean-session workflow.
+The Supervisor reconstructs the cross-version trajectory, verifies claims, identifies the most valuable
+optimization frontier, retires exhausted branches, corrects major evidence or incumbent mistakes, and
+investigates recurring environment/tooling blockers. It leaves the single local action for each cycle to
+the Executor.
+
+Standing guidance must not allocate work to numbered future iterations or restate the ordinary
+profile/edit/validate/bench workflow. A validity horizon means that the same campaign strategy remains
+visible for several normal AKA cycles; it is not a multi-step schedule.
+
+## God's-eye execution context
+
+Before every Executor attempt the wrapper durably captures:
+
+- `base-prompt.md`: the exact rendered AKA prompt before Supervisor advice;
+- `effective-prompt.md`: the exact prompt delivered to the Executor;
+- hashes, prompt kind, attempt number, and the injected guidance id.
+
+At activation, `get_campaign_facts` exposes:
+
+- controller/Git/process facts;
+- sanitized base optimize arguments and guidance-injection semantics;
+- the prompt catalog for setup/iteration/conversion/recombination and production policy;
+- recent exact prompt snapshots;
+- a compact cross-version memory trajectory and run outcomes;
+- prior Supervisor guidance, its deliveries, and lifecycle state.
+
+The bounded `read_workspace_file` tool also understands virtual resources:
+
+```text
+@executor/latest/base
+@executor/latest/effective
+@executor/<session-id>/base
+@executor/<session-id>/effective
+@runtime/orchestrator/prompts/iteration.md
+@runtime/orchestrator/optimization_policy.py
+@runtime/reference/CLAUDE.md
+```
+
+Activation artifacts contain the newest 1,000 events since the prior review plus an explicit omission
+count. The campaign digest and cursor tools provide navigation into older evidence, avoiding the old
+failure mode where the first 1,000 events silently hid the end of a long review window.
 
 The long-lived service maintains campaign state, while every strong-model observation is a fresh
 Codex `exec --ephemeral` activation. The Supervisor runs with a read-only shell sandbox and receives
@@ -58,6 +105,15 @@ Control:
 
 - `set_next_iteration_guidance`
 - `interrupt_and_restart`
+
+`set_next_iteration_guidance` retains its V1 name for compatibility, but now publishes
+`standing_campaign_strategy`. Its MCP description and Executor framing explicitly prohibit treating the
+message as an alternate iteration workflow or a checklist to finish in one session.
+
+`inspect_gateway_job` also supports fixed non-mutating diagnostics without expanding the V1 tool
+surface: local toolchain versions, workspace layout/static imports, and Python/shell syntax checks.
+Syntax checks copy files to a temporary directory before execution. Gateway jobs remain observation-only;
+the Supervisor cannot mutate or cancel shared gateway state.
 
 The Supervisor cannot directly edit the workspace, run arbitrary Git mutations, change hard budgets,
 or submit GPU work. A guarded interrupt requires the exact active run id. The parent runner executes
@@ -115,8 +171,9 @@ python -m supervisor.optimize \
 Manual review uses the same bounded MCP tools and provider settings. If the workspace belongs to a
 currently active supervised process, guarded interruption still requires its exact active run id.
 
-Pending guidance uses a newest-wins policy and is scoped to logical iteration numbers. A newer macro
-plan supersedes older pending plans; legacy unscoped V1 guidance is not replayed after a resume.
+Pending strategy uses a newest-wins policy and is scoped to a logical-iteration validity horizon. A newer
+campaign strategy supersedes older pending advice; legacy unscoped V1 guidance is not replayed after a
+resume. The horizon controls delivery lifetime only and never assigns a direction to a particular cycle.
 
 The Supervisor intentionally starts Codex with `--ignore-user-config` so unrelated user MCP servers
 and approval settings are not inherited. Shell execution, hooks, plugins, apps, and multi-agent

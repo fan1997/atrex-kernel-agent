@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -49,6 +50,7 @@ class CampaignStore:
         self.guidance_superseded = self.campaign_dir / "guidance" / "superseded"
         self.control_pending = self.campaign_dir / "control" / "pending"
         self.control_consumed = self.campaign_dir / "control" / "consumed"
+        self.sessions_dir = self.campaign_dir / "sessions"
         self.activations_dir = self.campaign_dir / "activations"
         self.state_dir = self.campaign_dir / "state"
         for path in (
@@ -58,6 +60,7 @@ class CampaignStore:
             self.guidance_superseded,
             self.control_pending,
             self.control_consumed,
+            self.sessions_dir,
             self.activations_dir,
             self.state_dir,
         ):
@@ -135,6 +138,48 @@ class CampaignStore:
                     break
         return result
 
+    def read_recent_events(
+        self,
+        after_cursor: int = 0,
+        through_cursor: int | None = None,
+        limit: int = 1000,
+        event_types: Iterable[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Return the newest bounded event window, preserving chronological order."""
+        allowed = set(event_types)
+        newest: deque[dict[str, Any]] = deque(maxlen=max(1, min(limit, 5000)))
+        if not self.events_path.exists():
+            return []
+        ceiling = through_cursor if through_cursor is not None else self.cursor
+        with self.events_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cursor = int(event.get("cursor") or 0)
+                if cursor <= after_cursor or cursor > ceiling:
+                    continue
+                if allowed and str(event.get("kind")) not in allowed:
+                    continue
+                newest.append(event)
+        return list(newest)
+
+    def count_events(self, after_cursor: int = 0, through_cursor: int | None = None) -> int:
+        if not self.events_path.exists():
+            return 0
+        ceiling = through_cursor if through_cursor is not None else self.cursor
+        count = 0
+        with self.events_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    cursor = int(json.loads(line).get("cursor") or 0)
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                if after_cursor < cursor <= ceiling:
+                    count += 1
+        return count
+
     def wait_events(self, after_cursor: int, timeout_seconds: int) -> list[dict[str, Any]]:
         deadline = time.monotonic() + max(0, min(timeout_seconds, 30))
         while True:
@@ -152,6 +197,101 @@ class CampaignStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
+
+    def set_execution_context(self, data: dict[str, Any]) -> None:
+        """Persist the non-secret controller contract visible to the Supervisor."""
+        _atomic_json(self.state_dir / "execution-context.json", data)
+
+    def execution_context(self) -> dict[str, Any]:
+        path = self.state_dir / "execution-context.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def record_session_prompt(
+        self,
+        run_id: str,
+        base_prompt: str,
+        effective_prompt: str,
+        prompt_kind: str,
+        attempt: int,
+        guidance_request_id: str = "",
+    ) -> dict[str, Any]:
+        """Capture exactly what AKA generated and what the Executor actually received."""
+        session_id = run_id.rsplit(":", 1)[-1]
+        session_dir = self.sessions_dir / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        base_path = session_dir / "base-prompt.md"
+        effective_path = session_dir / "effective-prompt.md"
+        base_path.write_text(base_prompt, encoding="utf-8")
+        effective_path.write_text(effective_prompt, encoding="utf-8")
+        metadata = {
+            "campaign_id": self.campaign_id,
+            "run_id": run_id,
+            "session_id": session_id,
+            "captured_at": utc_now(),
+            "prompt_kind": prompt_kind,
+            "attempt": int(attempt),
+            "guidance_request_id": guidance_request_id,
+            "base_prompt_sha256": hashlib.sha256(base_prompt.encode("utf-8")).hexdigest(),
+            "effective_prompt_sha256": hashlib.sha256(
+                effective_prompt.encode("utf-8")
+            ).hexdigest(),
+            "base_prompt_chars": len(base_prompt),
+            "effective_prompt_chars": len(effective_prompt),
+            "base_prompt_path": str(base_path),
+            "effective_prompt_path": str(effective_path),
+        }
+        _atomic_json(session_dir / "metadata.json", metadata)
+        _atomic_json(self.state_dir / "latest-session-prompt.json", metadata)
+        self.append_fact("session_prompt_captured", metadata)
+        return metadata
+
+    def list_session_prompts(self, limit: int = 20) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for path in self.sessions_dir.glob("*/metadata.json"):
+            try:
+                records.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
+        records.sort(key=lambda item: str(item.get("captured_at") or ""), reverse=True)
+        return records[: max(1, min(int(limit), 100))]
+
+    def read_session_prompt(self, session_id: str, variant: str = "effective") -> str:
+        if session_id == "latest":
+            records = self.list_session_prompts(limit=1)
+            if not records:
+                raise ValueError("no captured Executor prompts")
+            session_id = str(records[0].get("session_id") or "")
+        if not re.fullmatch(r"[0-9A-Za-z._-]{1,200}", session_id):
+            raise ValueError("invalid session id")
+        filename = {
+            "base": "base-prompt.md",
+            "effective": "effective-prompt.md",
+        }.get(variant)
+        if filename is None:
+            raise ValueError("prompt variant must be base or effective")
+        path = self.sessions_dir / session_id / filename
+        if not path.is_file():
+            raise ValueError(f"captured prompt does not exist: {session_id}/{variant}")
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    def guidance_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for status, directory in (
+            ("pending", self.guidance_pending),
+            ("consumed", self.guidance_consumed),
+            ("superseded", self.guidance_superseded),
+        ):
+            for path in directory.glob("*.json"):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                records.append({**data, "lifecycle_status": status, "artifact": str(path)})
+        records.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return records[: max(1, min(int(limit), 100))]
 
     def schedule_state(self) -> dict[str, Any]:
         path = self.state_dir / "supervisor-schedule.json"
@@ -215,6 +355,7 @@ class CampaignStore:
                     "request_id": request_id,
                     "created_at": utc_now(),
                     "source": source,
+                    "guidance_kind": "standing_campaign_strategy",
                     "message": message,
                     "first_iteration": first_iteration,
                     "expires_after_iteration": first_iteration + valid_iterations - 1,

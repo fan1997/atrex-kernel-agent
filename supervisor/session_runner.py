@@ -33,9 +33,13 @@ def _append_guidance(prompt: str, guidance: str) -> str:
         return prompt
     return (
         prompt.rstrip()
-        + "\n\n## Campaign Supervisor guidance\n\n"
+        + "\n\n## Standing Campaign Supervisor strategy\n\n"
         + guidance.strip()
-        + "\n\nTreat this as independent macro guidance. Verify it against current profiler, Git, "
+        + "\n\nThis is durable strategic advice, not an alternate iteration workflow and not a "
+          "checklist to complete in this session. Continue to follow the original AKA prompt "
+          "above, complete exactly its normal cycle, and choose only one locally evidence-supported "
+          "optimization action. Use this strategy to rank directions, avoid exhausted work, and "
+          "apply campaign-level corrections. Verify every claim against current profiler, Git, "
           "correctness, and workload evidence before acting.\n"
     )
 
@@ -244,6 +248,15 @@ def supervised_run_session(
             remaining = max(1, int(deadline - time.monotonic()))
             effective_prompt = _append_guidance(prompt, next_guidance)
             run_id = f"{bridge.campaign_id}:{uuid.uuid4().hex[:12]}"
+            record_prompt = getattr(bridge, "record_prompt", None)
+            if record_prompt is not None:
+                record_prompt(
+                    run_id,
+                    prompt,
+                    effective_prompt,
+                    prompt_kind,
+                    restart_count + 1,
+                )
             bridge.begin_run(run_id, agent_cli, restart_count + 1, prompt_kind)
             cmd = base._session_command(agent_cli, effective_prompt, str(uuid.uuid4()))
             result = _stream_attempt(cmd, workspace, remaining, env, bridge, run_id)

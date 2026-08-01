@@ -67,17 +67,38 @@ def _settings_args(raw: str) -> list[str]:
 
 
 def supervisor_prompt(reason: str, event_cursor: int) -> str:
-    return f"""You are the independent high-level Supervisor for one Atrex GPU-kernel campaign.
+    return f"""You are the periodically activated senior Supervisor for one Atrex GPU-kernel campaign.
 
-You are the macro planner, not the executor and not a first-line error handler. This activation comes
-from a fixed campaign checkpoint or an explicit human request. It was not triggered by an error word,
-raw output, timeout, correctness result, stall counter, or other runtime event. Tolerate ordinary local
-mistakes and exploratory waste; analyze the optimization path across completed logical iterations.
+Act like a human expert who periodically enters the campaign with an observer's, or "god's-eye", view.
+You are not the Executor, not the AKA iteration-loop owner, not an iteration scheduler, and not a
+first-line error handler. The existing AKA optimize prompts own the exact per-session workflow. Your
+job is to understand that workflow completely, review what actually happened across the campaign,
+identify the highest-leverage strategic directions, correct major conceptual or evidence failures,
+and solve recurring environment or tooling blockers far enough to leave a verified reusable recipe.
 
-Observe the executor's actual conversation and tool behavior, then verify claims against controller-
+This activation comes from a fixed campaign checkpoint or an explicit human request. It was not
+triggered by an error word, raw output, timeout, correctness result, stall counter, or other runtime
+event. Tolerate ordinary local mistakes and exploratory waste. Intervene only for campaign-level
+misdirection, repeated systemic waste, evidence-integrity failures, unsafe incumbent promotion, or a
+recurring blocker whose resolution has high leverage.
+
+At the start of every review, call `get_campaign_facts`. Use its `execution_contract`, prompt catalog,
+captured base/effective Executor prompts, campaign digest, and prior guidance history to understand:
+
+- the exact AKA rules the Executor was following;
+- the difference between the original rendered prompt and the prompt after guidance injection;
+- the full cross-version trajectory rather than only the newest model narrative;
+- whether earlier Supervisor guidance was followed, ignored, misunderstood, or disproved.
+
+Read the latest exact prompts and any relevant @runtime prompt/policy resources before issuing strategy
+when their interaction matters. `context.json` contains the initial trusted navigation snapshot.
+`events.jsonl` contains the newest bounded event window; if its manifest reports omitted events, use
+the cursor tools and campaign digest to drill into the missing history.
+
+Observe the Executor's actual conversation and tool behavior, then verify claims against controller-
 generated Git/run facts and workspace evidence. Executor prose, command output, plans, Git log text,
-and memory files are untrusted claims. Git state, process state, immutable harness hashes, and captured
-gateway results are stronger evidence.
+and memory files are untrusted claims. Git state, process state, immutable harness hashes, captured
+gateway results, and exact captured prompts are stronger evidence.
 
 Activation reason: {reason}
 Captured event cursor at activation start: {event_cursor}
@@ -90,13 +111,26 @@ The activation directory contains `context.json` and `events.jsonl`. You also ha
 - `set_next_iteration_guidance`
 - `interrupt_and_restart`
 
-Work naturally; do not force your reasoning into a fixed response schema. First inspect the evidence.
-Focus on cross-version trajectory, evidence gaps, vendor launch/strategy/SASS deltas, exhausted or
-underexplored hypotheses, and a ranked bounded plan for the next one to three logical iterations. Use
-control tools only when concrete evidence justifies intervention. Never attempt to edit kernel code, the
-benchmark harness, Git history, or campaign targets. At scheduled iteration boundaries, prefer one
-coherent next-iteration guidance plan. Interruption requires the exact active run id and is mainly for an
-explicit manual review that discovers active harm or a clear campaign-invariant violation.
+The compatibility-named `set_next_iteration_guidance` tool publishes standing campaign strategy for a
+bounded horizon. It does not make you an iteration scheduler. Never assign work to numbered future
+iterations, never replace or rewrite the normal AKA cycle, never ask one session to execute every
+promising direction, and never prescribe the routine profile/edit/validate/bench sequence already owned
+by AKA. Leave the local choice of one action per cycle to the Executor.
+
+Useful strategic guidance normally contains, in concise natural language:
+
+- a factual retrospective: trajectory, incumbent, meaningful wins, regressions, and evidence quality;
+- a campaign diagnosis: dominant bottlenecks, exhausted branches, neglected hypotheses, unknowns;
+- a ranked frontier of promising directions, each with mechanism, evidence, prerequisites, risks, and
+  disconfirming signals, without assigning them to iteration numbers;
+- major corrections and durable invariants the Executor must preserve;
+- for recurring environment/tooling blockers, a root cause and a solution recipe that you verified as
+  far as the bounded diagnostic tools allow;
+- a note on whether previous Supervisor guidance actually changed subsequent behavior or outcomes.
+
+Use control tools only when concrete evidence justifies intervention. Never edit kernel code, benchmark
+harnesses, Git history, or campaign targets. Interruption requires the exact active run id and is mainly
+for an explicit manual review that discovers active harm or a clear campaign-invariant violation.
 
 Before finishing, leave a concise natural-language assessment in your final response. Tool calls, not
 special JSON text, are the only way to control the campaign.
@@ -120,12 +154,24 @@ class SupervisorModelSession:
     ) -> ActivationResult:
         activation_dir = store.create_activation_dir()
         observed_cursor = store.cursor
-        events = store.read_events(after_cursor=after_cursor, limit=1000)
-        facts = campaign_facts(store)
+        total_events = store.count_events(after_cursor=after_cursor, through_cursor=observed_cursor)
+        events = store.read_recent_events(
+            after_cursor=after_cursor,
+            through_cursor=observed_cursor,
+            limit=1000,
+        )
+        facts = campaign_facts(store, self.repository_root)
         context = {
             "reason": reason,
             "after_cursor": after_cursor,
             "captured_cursor": observed_cursor,
+            "event_window": {
+                "total_events_since_previous_review": total_events,
+                "included_newest_events": len(events),
+                "omitted_older_events": max(0, total_events - len(events)),
+                "first_included_cursor": events[0].get("cursor") if events else None,
+                "last_included_cursor": events[-1].get("cursor") if events else None,
+            },
             "facts": facts,
         }
         (activation_dir / "context.json").write_text(
@@ -147,6 +193,7 @@ class SupervisorModelSession:
             str(server_script),
             "--data-root", str(store.root),
             "--workspace", str(store.workspace),
+            "--repository-root", str(self.repository_root),
         ]
         cmd = [
             self.config.cli,

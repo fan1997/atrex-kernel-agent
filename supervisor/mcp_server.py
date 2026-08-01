@@ -13,8 +13,10 @@ if __package__ in (None, ""):
 
 from supervisor.facts import (  # noqa: E402
     campaign_facts,
+    inspect_environment,
     inspect_gateway_job,
     inspect_git,
+    read_supervisor_resource,
     read_workspace_file,
 )
 from supervisor.models import ControlRequest  # noqa: E402
@@ -52,7 +54,11 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "get_campaign_facts",
-            "description": "Get controller-generated Git, run, stall, and memory facts.",
+            "description": (
+                "Get the Supervisor's campaign-wide view: controller facts, the AKA execution "
+                "contract and prompt catalog, version trajectory, captured prompts, and prior "
+                "guidance history. Use this first at every activation."
+            ),
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -71,7 +77,11 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "read_workspace_file",
-            "description": "Read a bounded text range inside the current campaign workspace.",
+            "description": (
+                "Read a bounded workspace file or a virtual execution-contract resource. Virtual "
+                "paths include @executor/latest/base, @executor/latest/effective, captured session "
+                "ids, and the @runtime/... entries returned by get_campaign_facts."
+            ),
             "inputSchema": {
                 "type": "object",
                 "required": ["path"],
@@ -84,18 +94,34 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "inspect_gateway_job",
-            "description": "Find raw captured evidence for a gateway job id.",
+            "description": (
+                "Inspect raw captured evidence for a gateway job, or run a fixed non-mutating "
+                "environment diagnostic. Diagnostics are toolchain, workspace_layout, and syntax; "
+                "syntax checks copy inputs into an isolated temporary directory first."
+            ),
             "inputSchema": {
                 "type": "object",
-                "required": ["job_id"],
-                "properties": {"job_id": {"type": "string"}},
+                "properties": {
+                    "job_id": {"type": "string"},
+                    "diagnostic": {
+                        "type": "string",
+                        "enum": ["toolchain", "workspace_layout", "syntax"],
+                    },
+                    "paths": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {"type": "string"},
+                    },
+                },
             },
         },
         {
             "name": "set_next_iteration_guidance",
             "description": (
-                "Set the newest-wins macro guidance for the next logical iteration(s). Any older "
-                "pending guidance is superseded."
+                "Publish newest-wins standing campaign strategy for a bounded future horizon. "
+                "Despite the compatibility name, this is not an iteration scheduler: do not assign "
+                "directions to numbered iterations or replace the normal AKA cycle. Any older "
+                "pending strategy is superseded."
             ),
             "inputSchema": {
                 "type": "object",
@@ -131,8 +157,13 @@ def tool_definitions() -> list[dict[str, Any]]:
 
 
 class ToolDispatcher:
-    def __init__(self, store: CampaignStore):
+    def __init__(self, store: CampaignStore, repository_root: Path | None = None):
         self.store = store
+        self.repository_root = (
+            repository_root.resolve()
+            if repository_root is not None
+            else Path(__file__).resolve().parent.parent
+        )
 
     def call(self, name: str, args: dict[str, Any]) -> Any:
         if name == "tail_agent_events":
@@ -147,7 +178,7 @@ class ToolDispatcher:
                 timeout_seconds=int(args.get("timeout_seconds") or 20),
             )
         if name == "get_campaign_facts":
-            return campaign_facts(self.store)
+            return campaign_facts(self.store, self.repository_root)
         if name == "inspect_git":
             return inspect_git(
                 self.store.workspace,
@@ -157,13 +188,29 @@ class ToolDispatcher:
                 max_count=int(args.get("max_count") or 20),
             )
         if name == "read_workspace_file":
+            path = str(args.get("path") or "")
+            if path.startswith("@"):
+                return read_supervisor_resource(
+                    self.store,
+                    self.repository_root,
+                    resource=path,
+                    start_line=int(args.get("start_line") or 1),
+                    max_lines=int(args.get("max_lines") or 300),
+                )
             return read_workspace_file(
                 self.store.workspace,
-                path=str(args.get("path") or ""),
+                path=path,
                 start_line=int(args.get("start_line") or 1),
                 max_lines=int(args.get("max_lines") or 300),
             )
         if name == "inspect_gateway_job":
+            diagnostic = str(args.get("diagnostic") or "").strip()
+            if diagnostic:
+                return inspect_environment(
+                    self.store,
+                    diagnostic=diagnostic,
+                    paths=[str(path) for path in args.get("paths") or []],
+                )
             return inspect_gateway_job(self.store, str(args.get("job_id") or ""))
         if name == "set_next_iteration_guidance":
             message = str(args.get("message") or "").strip()
@@ -175,7 +222,10 @@ class ToolDispatcher:
             )
             return {
                 "queued": True,
-                "policy": "newest-wins with logical-iteration expiry",
+                "policy": (
+                    "newest-wins standing campaign strategy with logical-iteration expiry; "
+                    "not an iteration-by-iteration schedule"
+                ),
                 "path": str(path),
             }
         if name == "interrupt_and_restart":
@@ -210,8 +260,8 @@ def _response(request_id: Any, result: Any = None, error: dict[str, Any] | None 
     sys.stdout.flush()
 
 
-def serve(store: CampaignStore) -> int:
-    dispatcher = ToolDispatcher(store)
+def serve(store: CampaignStore, repository_root: Path | None = None) -> int:
+    dispatcher = ToolDispatcher(store, repository_root)
     for line in sys.stdin:
         try:
             request = json.loads(line)
@@ -268,9 +318,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Atrex supervisor MCP stdio server")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--workspace", required=True)
+    parser.add_argument("--repository-root", default=str(Path(__file__).resolve().parent.parent))
     args = parser.parse_args(argv)
     store = CampaignStore(Path(args.data_root), Path(args.workspace))
-    return serve(store)
+    return serve(store, Path(args.repository_root))
 
 
 if __name__ == "__main__":

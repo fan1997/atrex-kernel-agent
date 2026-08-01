@@ -134,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         max_activations=args.supervisor_max_activations,
         max_restarts_per_session=args.supervisor_max_restarts,
         required=args.supervisor_required,
+        optimize_args=tuple(optimize_args),
     )
     runtime = SupervisorRuntime(config)
 

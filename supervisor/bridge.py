@@ -4,6 +4,7 @@ import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from .model_session import ModelSessionConfig, SupervisorModelSession
 from .models import AgentEvent, ControlRequest
@@ -24,12 +25,70 @@ class SupervisorConfig:
     max_activations: int = 100
     max_restarts_per_session: int = 2
     required: bool = False
+    optimize_args: tuple[str, ...] = ()
+
+
+def _redact_optimize_args(args: tuple[str, ...]) -> list[str]:
+    """Keep the execution contract visible without persisting command-line secrets."""
+    sensitive_markers = ("token", "secret", "password", "credential", "api-key", "api_key")
+    result: list[str] = []
+    redact_next = False
+    for value in args:
+        if redact_next:
+            result.append("<redacted>")
+            redact_next = False
+            continue
+        lowered = value.lower()
+        if value.startswith("--") and any(marker in lowered for marker in sensitive_markers):
+            if "=" in value:
+                result.append(value.split("=", 1)[0] + "=<redacted>")
+            else:
+                result.append(value)
+                redact_next = True
+            continue
+        if "://" in value:
+            try:
+                parsed = urlsplit(value)
+                host = parsed.hostname or ""
+                if parsed.port:
+                    host += f":{parsed.port}"
+                value = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+            except ValueError:
+                value = "<redacted-url>"
+        result.append(value)
+    return result
 
 
 class CampaignBridge:
     def __init__(self, config: SupervisorConfig, workspace: Path):
         self.config = config
         self.store = CampaignStore(config.data_root, workspace)
+        self._active_guidance: dict = {}
+        existing_context = self.store.execution_context()
+        optimize_args = (
+            _redact_optimize_args(config.optimize_args)
+            if config.optimize_args
+            else list(existing_context.get("optimize_args") or [])
+        )
+        self.store.set_execution_context(
+            {
+                **existing_context,
+                "repository_root": str(config.repository_root.resolve()),
+                "optimize_args": optimize_args,
+                "supervision": {
+                    "activation_policy": "baseline + fixed completed-iteration cadence + before-stop + manual",
+                    "every_completed_iterations": config.every_iterations,
+                    "max_restarts_per_session": config.max_restarts_per_session,
+                    "event_activation": False,
+                },
+                "guidance_contract": {
+                    "kind": "standing_campaign_strategy",
+                    "delivery": "appended after the original rendered AKA prompt",
+                    "authority": "advisory strategy; original AKA execution contract remains authoritative",
+                    "executor_interpretation": "apply the strategy while completing the normal one-cycle workflow; do not execute every direction in one session",
+                },
+            }
+        )
         model = SupervisorModelSession(
             ModelSessionConfig(
                 cli=config.cli,
@@ -73,6 +132,14 @@ class CampaignBridge:
         return recorded
 
     def begin_run(self, run_id: str, agent_cli: str, attempt: int, prompt_kind: str) -> None:
+        prompt_metadata = next(
+            (
+                item
+                for item in self.store.list_session_prompts(limit=5)
+                if item.get("run_id") == run_id
+            ),
+            {},
+        )
         data = {
             "campaign_id": self.campaign_id,
             "run_id": run_id,
@@ -81,6 +148,7 @@ class CampaignBridge:
             "attempt": attempt,
             "prompt_kind": prompt_kind,
             "controller_pid": os.getpid(),
+            "prompt_snapshot": prompt_metadata,
         }
         self.store.set_current_run(data)
         self.store.append_fact("run_started", data)
@@ -100,7 +168,25 @@ class CampaignBridge:
 
     def take_guidance(self) -> str:
         guidance = self.store.consume_guidance(self.store.next_logical_iteration())
+        self._active_guidance = guidance or {}
         return str((guidance or {}).get("message") or "").strip()
+
+    def record_prompt(
+        self,
+        run_id: str,
+        base_prompt: str,
+        effective_prompt: str,
+        prompt_kind: str,
+        attempt: int,
+    ) -> dict:
+        return self.store.record_session_prompt(
+            run_id=run_id,
+            base_prompt=base_prompt,
+            effective_prompt=effective_prompt,
+            prompt_kind=prompt_kind,
+            attempt=attempt,
+            guidance_request_id=str(self._active_guidance.get("request_id") or ""),
+        )
 
     def poll_control(self, run_id: str) -> ControlRequest | None:
         return self.store.consume_control(run_id)
