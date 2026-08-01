@@ -1,13 +1,20 @@
 # One optimization iteration (clean session)
 
 You are one **clean session** in a profile-driven GPU-kernel optimization campaign.
-Run **exactly one cycle** — profile → pick ONE lever → edit → validate → bench → record — then **exit**.
+Run **exactly one cycle** — profile → choose ONE evidence-backed, measurable optimization hypothesis
+(a testable formulation of one optimization direction) → implement its complete, tightly coupled change
+bundle → validate → bench → record — then **exit**.
 
 Hard rules for this session:
 
 - **Do NOT loop.** One cycle, then stop. There is no Stage 6 here — the orchestrator owns the outer loop and decides whether another session runs.
 - **Do NOT try to reach the final target** in this session. Just make this one cycle count and hand off cleanly.
 - The whole point of a clean session is a fresh context: you inherit state from disk, not from a prior conversation.
+- **The unit of one iteration is one measurable hypothesis** — not one edited line, one knob, one file,
+  or one loosely defined optimization category. Implement all and only the tightly coupled code,
+  configuration, and parameter changes required to test that hypothesis. A bounded set of parameter
+  variants is allowed when every variant tests the same causal claim, but only one fully validated
+  candidate may remain. Do not combine independent hypotheses, unrelated cleanup, or refactoring.
 - **The host GPU boundary is non-negotiable.** Never run `python test_kernel.py`, `python kernel.py`, or
   `python -c "import kernel"` directly in the workspace, even as a quick smoke/import check. Always route
   the command through `python tools/sandbox.py ... --`; the orchestrator terminates the whole session on a
@@ -56,10 +63,11 @@ Evidence format throughout: `evidence -> inference -> action`. Do Stages 1–4 o
    you may reuse it instead of re-profiling. Otherwise profile fresh in Step B.
 
 **`open_directions` are priors, not orders.** Pick the most promising lead — **or**, if a fresh look at the
-profile reveals a better lever, pursue that instead. The only hard constraint is: don't re-run a recorded dead-end.
+profile reveals a better measurable hypothesis, pursue that instead. The only hard constraint is: don't
+re-run a recorded dead-end.
 
 **Consider shape bucketing when the evidence supports it.** Check `performance.latency_us_by_shape` and the
-profile: if different-scale shapes are bottlenecked differently, a valid category is **shape specialization** —
+profile: if different-scale shapes are bottlenecked differently, a valid hypothesis family is **shape specialization** —
 group shapes into a few buckets of similar scale (not one path per shape) and dispatch inside `run()` to a
 subkernel or tiling/block config per bucket. Many kernels don't need this — decide from memory, research, and
 current latencies.
@@ -123,7 +131,7 @@ an explicit source-correlation fallback run.
 
 ### Stage 2 — Evidence-Driven Research and Planning
 
-**Goal**: Use Stage 1 evidence to find one optimization path and produce `plans/v{{N}}_plan.md`.
+**Goal**: Use Stage 1 evidence to choose one measurable optimization hypothesis and produce `plans/v{{N}}_plan.md`.
 
 Execution steps:
 
@@ -153,33 +161,44 @@ Execution steps:
      - **L2 (reference-projects)**: Only if L1 yields no new actionable path. Search relevant modules in `reference-projects/` for implementation patterns.
      - **L3 (public web)**: Only if L1+L2 yield nothing new. Use web search for papers, docs, or community posts.
      - The draft MUST contain at least one `New? = Yes` entry. If all layers produce no new finding, report search space exhaustion and stop — do not fabricate a draft or invoke gen-plan.
-6. **Stop early**: Once you find **one viable optimization direction** with supporting evidence, proceed to draft immediately. Do not exhaustively search all layers.
+6. **Stop early**: Once you can formulate **one viable, measurable optimization hypothesis** with supporting evidence, proceed to draft immediately. Do not exhaustively search all layers.
 7. **Write draft** to `plans/v{{N}}_draft.md` — a concise summary of:
    - Input Evidence: key metrics and diagnoses from `profiles/v{{N}}/REPORT.md`
    - Search findings: what you found (with Layer, New? annotations) and the chosen optimization direction
+   - Measurable hypothesis: the causal claim, predicted profile/latency change, and disconfirming result
+   - Complete change bundle: every tightly coupled code/configuration change and bounded parameter axis
+     required for a valid test of that hypothesis
    - Constraints: target framework, platform, correctness requirements
    - Stall context: current `STALL_COUNT` and whether forced expansion was triggered
    - Performance expectation: a measurable post-change profile/latency expectation, plus the condition that would justify PTX/SASS inspection if compiler lowering could explain a mismatch
 8. **Generate plan** using the backend-specific planner:
 
    {{PLAN_GENERATOR}}
-   This produces a structured plan with acceptance criteria. Keep generation in direct/one-shot mode without convergence rounds; this iteration implements only one optimization action.
+   This produces a structured plan with acceptance criteria. Keep generation in direct/one-shot mode
+   without convergence rounds; this iteration tests one measurable hypothesis by implementing its complete,
+   tightly coupled change bundle.
 
 **Output**: `plans/v{{N}}_plan.md` — the sole input for Stage 3.
 
 ### Stage 3 — Optimization Implementation
 
-**Goal**: Implement exactly one optimization category from `plans/v{{N}}_plan.md` with clear evidence attribution.
+**Goal**: Test exactly one measurable optimization hypothesis from `plans/v{{N}}_plan.md` with clear evidence attribution.
 
 Execution steps:
 
 1. **Framework learning** (if needed): If the plan references framework APIs or operator interfaces you're unfamiliar with, search `gpu-wiki/reference-kernels/` or reference-projects first.
-2. **Localization check**: If the change targets a symptom with a `LOCALIZE` line, ensure you have re-profiled with `--source` (see Stage 1 localization rule). Change only the specific line(s) the evidence identifies.
-3. **Implement** the optimization action in `kernel.py`:
-   - Change only one category per iteration (e.g., vectorized load only, swizzle only, double buffering only).
-   - Each change must have clear evidence attribution (`evidence -> inference -> action`).
-   - Do not mix unrelated refactors, formatting, or cleanup.
-4. **Correctness validation** — immediately after editing:
+2. **Localization check**: If the hypothesis targets a symptom with a `LOCALIZE` line, ensure you have
+   re-profiled with `--source` (see Stage 1 localization rule). Anchor the hypothesis to the identified
+   source/SASS evidence. Coupled edits outside that exact line are allowed only when the plan explains why
+   they are inseparable from a valid implementation of the same hypothesis.
+3. **Implement** the complete change bundle in `kernel.py` and, when required, its directly coupled configuration:
+   - The hypothesis is the unit of attribution, not the number of changed lines, knobs, files, or categories.
+   - Make all and only the inseparable changes required for a valid test. Map every component to the same
+     chain: `evidence -> inference -> hypothesis -> implementation`.
+   - A bounded set of parameter variants may be screened when all variants test the same causal claim. Remove
+     temporary variants and retain only the best fully validated candidate.
+   - Do not mix independent performance hypotheses, unrelated refactors, formatting, or cleanup.
+4. **Correctness validation** — immediately after implementing the bundle or selecting its finalist:
    ```bash
    python tools/sandbox.py --kind run --no-sync -- python test_kernel.py --version v{{N}} --no-memory
    ```

@@ -221,6 +221,12 @@ class AgentCliTest(unittest.TestCase):
         self.assertNotIn("{{PLAN_GENERATOR}}", iteration)
         self.assertIn("$gpu-kernel-baseline", setup)
         self.assertIn("$humanize-gen-plan", iteration)
+        self.assertIn("choose ONE evidence-backed, measurable optimization hypothesis", iteration)
+        self.assertIn("complete, tightly coupled change bundle", iteration)
+        self.assertIn("single-hypothesis optimization plan", iteration)
+        self.assertNotIn("pick ONE lever", iteration)
+        self.assertNotIn("exactly one optimization category", iteration)
+        self.assertNotIn("single-action optimization plan", iteration)
 
 
 if __name__ == "__main__":

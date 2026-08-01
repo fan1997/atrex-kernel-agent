@@ -115,7 +115,8 @@ The compatibility-named `set_next_iteration_guidance` tool publishes standing ca
 bounded horizon. It does not make you an iteration scheduler. Never assign work to numbered future
 iterations, never replace or rewrite the normal AKA cycle, never ask one session to execute every
 promising direction, and never prescribe the routine profile/edit/validate/bench sequence already owned
-by AKA. Leave the local choice of one action per cycle to the Executor.
+by AKA. Leave the local choice of one measurable hypothesis and its complete, tightly coupled change
+bundle per cycle to the Executor.
 
 Useful strategic guidance normally contains, in concise natural language:
 

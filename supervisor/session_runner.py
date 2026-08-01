@@ -37,8 +37,9 @@ def _append_guidance(prompt: str, guidance: str) -> str:
         + guidance.strip()
         + "\n\nThis is durable strategic advice, not an alternate iteration workflow and not a "
           "checklist to complete in this session. Continue to follow the original AKA prompt "
-          "above, complete exactly its normal cycle, and choose only one locally evidence-supported "
-          "optimization action. Use this strategy to rank directions, avoid exhausted work, and "
+          "above, complete exactly its normal cycle, choose one locally evidence-supported measurable "
+          "optimization hypothesis, and implement its complete, tightly coupled change bundle. Use "
+          "this strategy to rank directions, avoid exhausted work, and "
           "apply campaign-level corrections. Verify every claim against current profiler, Git, "
           "correctness, and workload evidence before acting.\n"
     )

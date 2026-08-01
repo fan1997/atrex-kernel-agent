@@ -2181,7 +2181,8 @@ def _plan_generator_directive(agent_cli: str, version: int) -> str:
     if agent_cli == "codex":
         return (
             f"Invoke the `$humanize-gen-plan` skill with `{draft}` as input and `{plan}` as "
-            "output. Use direct/no-discussion mode for this single-action optimization plan. "
+            "output. Use direct/no-discussion mode for this single-hypothesis optimization plan, "
+            "including the complete, tightly coupled change bundle required to test it. "
             "The skill is repository-local under `.agents/skills/`; do not look for a slash "
             "command or Claude plugin."
         )

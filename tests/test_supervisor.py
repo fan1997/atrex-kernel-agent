@@ -25,7 +25,7 @@ from supervisor.models import AgentEvent, ControlRequest
 from supervisor.optimize import _parse_args, main as supervisor_main
 from supervisor.runtime_adapter import install_supervised_runtime
 from supervisor.service import SupervisorService
-from supervisor.session_runner import _stream_attempt, supervised_run_session
+from supervisor.session_runner import _append_guidance, _stream_attempt, supervised_run_session
 from supervisor.store import CampaignStore
 
 
@@ -36,6 +36,15 @@ def init_git(path: Path) -> None:
     (path / "kernel.py").write_text("VALUE = 1\n", encoding="utf-8")
     subprocess.run(["git", "add", "kernel.py"], cwd=str(path), check=True)
     subprocess.run(["git", "commit", "-qm", "baseline"], cwd=str(path), check=True)
+
+
+class PromptContractTest(unittest.TestCase):
+    def test_guidance_preserves_single_hypothesis_complete_bundle_contract(self) -> None:
+        effective = _append_guidance("base prompt", "rank these campaign directions")
+
+        self.assertIn("one locally evidence-supported measurable optimization hypothesis", effective)
+        self.assertIn("complete, tightly coupled change bundle", effective)
+        self.assertNotIn("choose only one locally evidence-supported optimization action", effective)
 
 
 class StoreTest(unittest.TestCase):

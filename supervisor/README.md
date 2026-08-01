@@ -46,8 +46,8 @@ The strong model is a periodically activated senior campaign expert, not a repla
 an iteration scheduler. The base AKA prompt remains authoritative for the exact clean-session workflow.
 The Supervisor reconstructs the cross-version trajectory, verifies claims, identifies the most valuable
 optimization frontier, retires exhausted branches, corrects major evidence or incumbent mistakes, and
-investigates recurring environment/tooling blockers. It leaves the single local action for each cycle to
-the Executor.
+investigates recurring environment/tooling blockers. It leaves the choice of one measurable local
+hypothesis and its complete, tightly coupled change bundle for each cycle to the Executor.
 
 Standing guidance must not allocate work to numbered future iterations or restate the ordinary
 profile/edit/validate/bench workflow. A validity horizon means that the same campaign strategy remains
