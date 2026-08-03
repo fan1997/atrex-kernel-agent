@@ -562,6 +562,7 @@ class RuntimeAdapterTest(unittest.TestCase):
                 sandbox_profile="",
                 sandbox_url="",
                 sandbox_timeout=600,
+                reasoning_effort="max",
             ):
                 return "original"
 
@@ -616,6 +617,7 @@ class RuntimeAdapterTest(unittest.TestCase):
                 sandbox_profile="",
                 sandbox_url="",
                 sandbox_timeout=600,
+                reasoning_effort="max",
             ):
                 return "original"
 
@@ -662,6 +664,7 @@ class RuntimeAdapterTest(unittest.TestCase):
                 sandbox_profile="",
                 sandbox_url="",
                 sandbox_timeout=600,
+                reasoning_effort="max",
             ):
                 return "original"
 
@@ -716,7 +719,7 @@ class RuntimeAdapterTest(unittest.TestCase):
                 return {}
 
             @staticmethod
-            def _session_command(agent_cli, prompt, session_id):
+            def _session_command(agent_cli, prompt, session_id, reasoning_effort):
                 payload = json.dumps(
                     {"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 2}}
                 )
@@ -774,7 +777,7 @@ class RuntimeAdapterTest(unittest.TestCase):
                 return {}
 
             @classmethod
-            def _session_command(cls, agent_cli, prompt, session_id):
+            def _session_command(cls, agent_cli, prompt, session_id, reasoning_effort):
                 cls.command_count += 1
                 if cls.command_count == 1:
                     return [sys.executable, "-c", "import time; time.sleep(10)"]

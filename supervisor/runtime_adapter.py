@@ -18,6 +18,7 @@ EXPECTED_RUN_SESSION_PARAMETERS = (
     "sandbox_profile",
     "sandbox_url",
     "sandbox_timeout",
+    "reasoning_effort",
 )
 
 
@@ -70,6 +71,7 @@ def install_supervised_runtime(base: Any, runtime: SupervisorRuntime) -> Iterato
         sandbox_profile="",
         sandbox_url="",
         sandbox_timeout=600,
+        reasoning_effort="max",
     ):
         return supervised_run_session(
             base,
@@ -82,6 +84,7 @@ def install_supervised_runtime(base: Any, runtime: SupervisorRuntime) -> Iterato
             sandbox_profile,
             sandbox_url,
             sandbox_timeout,
+            reasoning_effort,
         )
 
     base.run_session = run_session

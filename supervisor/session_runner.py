@@ -214,6 +214,7 @@ def supervised_run_session(
     sandbox_profile: str = "",
     sandbox_url: str = "",
     sandbox_timeout: int = 600,
+    reasoning_effort: str = "max",
 ) -> Any:
     bridge = runtime.bridge_for(workspace)
     # A resumed SOL campaign has no setup model session.  Confirm its controller-owned v0
@@ -259,7 +260,12 @@ def supervised_run_session(
                     restart_count + 1,
                 )
             bridge.begin_run(run_id, agent_cli, restart_count + 1, prompt_kind)
-            cmd = base._session_command(agent_cli, effective_prompt, str(uuid.uuid4()))
+            cmd = base._session_command(
+                agent_cli,
+                effective_prompt,
+                str(uuid.uuid4()),
+                reasoning_effort,
+            )
             result = _stream_attempt(cmd, workspace, remaining, env, bridge, run_id)
             bridge.end_run(run_id, result.exit_status, result.timed_out, result.interrupted)
             all_stdout.append(result.stdout)
