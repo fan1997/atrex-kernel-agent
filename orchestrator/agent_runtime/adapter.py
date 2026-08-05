@@ -168,8 +168,6 @@ def codex_settings_args(raw: str) -> list[str]:
 class AgentBackendAdapter(ABC):
     id: str
     settings_variable: str
-    prompt_via_stdin = False
-    stdin_prompt_argument: str | None = None
     capabilities = AgentRuntimeCapabilities(
         terminal_usage=False,
         usage_delta=False,
@@ -353,7 +351,6 @@ class ClaudeLikeAdapter(AgentBackendAdapter):
 class ClaudeAdapter(ClaudeLikeAdapter):
     id = "claude"
     settings_variable = "ATREX_CLAUDE_SESSION_SETTINGS"
-    prompt_via_stdin = True
 
     def __init__(self, humanize_dir: Path) -> None:
         self._humanize_dir = humanize_dir
@@ -528,8 +525,6 @@ class PiAdapter(AgentBackendAdapter):
 class CodexAdapter(AgentBackendAdapter):
     id = "codex"
     settings_variable = "ATREX_CODEX_SESSION_SETTINGS"
-    prompt_via_stdin = True
-    stdin_prompt_argument = "-"
     capabilities = AgentRuntimeCapabilities(
         terminal_usage=True,
         usage_delta=False,

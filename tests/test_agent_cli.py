@@ -144,15 +144,9 @@ class AgentCliTest(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def fake_run(
-            cmd: list[str],
-            cwd: Path,
-            timeout: int,
-            env: dict | None = None,
-            input_text: str | None = None,
+            cmd: list[str], cwd: Path, timeout: int, env: dict | None = None
         ) -> tuple[str, str, int, bool]:
-            captured.update(
-                cmd=cmd, cwd=cwd, timeout=timeout, env=env, input_text=input_text
-            )
+            captured.update(cmd=cmd, cwd=cwd, timeout=timeout, env=env)
             return (
                 '{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":2}}',
                 "",
@@ -185,8 +179,6 @@ class AgentCliTest(unittest.TestCase):
         self.assertEqual(env["ATREX_SANDBOX_GPU"], "REMOTE_GPU")
         self.assertEqual(env["ATREX_SANDBOX_URL"], "https://gateway.example.test")
         self.assertEqual(env["ATREX_SANDBOX_TIMEOUT"], "456")
-        self.assertEqual(captured["input_text"], "prompt")
-        self.assertNotIn("prompt", captured["cmd"])
         self.assertEqual(result.tokens, 9)
         self.assertEqual(result.terminal_usage.total_tokens, 9)
         self.assertEqual([event.kind for event in result.events], ["terminal_usage"])

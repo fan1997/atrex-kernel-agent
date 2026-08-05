@@ -130,12 +130,6 @@ class CliAgentRuntime:
             self._session_settings(),
         )
 
-    def build_invocation(
-        self, prompt: str, session_id: str, reasoning_effort: str
-    ) -> tuple[list[str], str | None]:
-        command = self.build_command(prompt, session_id, reasoning_effort)
-        return _prepare_prompt_transport(self._adapter, command, prompt)
-
     def _session_settings(self) -> str:
         return os.environ.get(self._adapter.settings_variable) or os.environ.get(
             "ATREX_SESSION_SETTINGS", ""
@@ -147,7 +141,7 @@ class CliAgentRuntime:
                 f"unsupported reasoning effort: {request.reasoning_effort!r}"
             )
         session_id = request.session_id or str(uuid.uuid4())
-        command, input_text = self.build_invocation(
+        command = self.build_command(
             request.prompt, session_id, request.reasoning_effort
         )
         environment = build_session_environment(self.id)
@@ -168,15 +162,11 @@ class CliAgentRuntime:
                     for key, value in request.extra_environment.items()
                 }
             )
-        runner_options = {
-            "cwd": request.workspace,
-            "timeout": request.timeout_s,
-            "env": environment,
-        }
-        if input_text is not None:
-            runner_options["input_text"] = input_text
         stdout, stderr, exit_status, timed_out = self._process_runner(
-            command, **runner_options
+            command,
+            cwd=request.workspace,
+            timeout=request.timeout_s,
+            env=environment,
         )
         observation_errors: tuple[str, ...] = ()
         try:
@@ -275,36 +265,6 @@ def build_session_command(
     runtime = build_agent_runtime(runtime_id, humanize_dir=humanize_dir)
     assert isinstance(runtime, CliAgentRuntime)
     return runtime.build_command(prompt, session_id, reasoning_effort)
-
-
-def _prepare_prompt_transport(
-    adapter,
-    command: list[str],
-    prompt: str,
-) -> tuple[list[str], str | None]:
-    if not adapter.prompt_via_stdin:
-        return command, None
-    if not command or command[-1] != prompt:
-        raise RuntimeError(
-            f"{adapter.id} command has no compatible prompt transport seam"
-        )
-    command = list(command[:-1])
-    if adapter.stdin_prompt_argument is not None:
-        command.append(adapter.stdin_prompt_argument)
-    return command, prompt
-
-
-def prepare_prompt_transport(
-    runtime_id: str,
-    command: list[str],
-    prompt: str,
-    *,
-    humanize_dir: Path = DEFAULT_HUMANIZE_DIR,
-    registry: BackendAdapterRegistry = DEFAULT_BACKEND_REGISTRY,
-) -> tuple[list[str], str | None]:
-    """Move supported CLI prompts off argv without changing command construction APIs."""
-    adapter = registry.create(runtime_id, humanize_dir)
-    return _prepare_prompt_transport(adapter, command, prompt)
 
 
 def auth_hint(runtime_id: str) -> str:

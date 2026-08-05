@@ -26,7 +26,6 @@ from .process import (
     DEFAULT_PROTECTED_GATEWAY_SCREEN,
     DEFAULT_PROTECTED_GATEWAY_STATE_NAME,
     ProcessRunner,
-    descendant_process_commands,
     dependency_process_violation,
     protected_gateway_identity,
     python_import_roots,
@@ -45,7 +44,6 @@ from .runtime import (
     build_agent_runtime,
     build_session_command,
     build_session_environment,
-    prepare_prompt_transport,
     token_usage_from_stream,
 )
 
@@ -78,10 +76,8 @@ __all__ = [
     "build_agent_runtime",
     "build_session_command",
     "build_session_environment",
-    "prepare_prompt_transport",
     "codex_settings_args",
     "dependency_process_violation",
-    "descendant_process_commands",
     "pi_settings_args",
     "protected_gateway_identity",
     "python_import_roots",

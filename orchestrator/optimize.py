@@ -300,7 +300,7 @@ def dispatch_framework_campaigns(
                 process_groups.add(os.getpgid(proc.pid))
             except ProcessLookupError:
                 continue
-            for pid, _argv in _agent_runtime.descendant_process_commands(proc.pid):
+            for pid, _argv in _descendant_process_commands(proc.pid):
                 try:
                     process_groups.add(os.getpgid(pid))
                 except ProcessLookupError:
@@ -507,14 +507,10 @@ def _dependency_process_violation(argv: list[str]) -> Optional[str]:
 
 
 def _run_bounded(
-    cmd: list[str],
-    cwd: Path,
-    timeout: int,
-    env: Optional[dict] = None,
-    input_text: str | None = None,
+    cmd: list[str], cwd: Path, timeout: int, env: Optional[dict] = None
 ) -> tuple[str, str, int, bool]:
     """Compatibility route to the extracted runtime process supervisor."""
-    return _agent_runtime.run_bounded(cmd, cwd, timeout, env, input_text)
+    return _agent_runtime.run_bounded(cmd, cwd, timeout, env)
 
 def _session_env(agent_cli: str) -> dict:
     """Compatibility route to the extracted runtime environment builder."""

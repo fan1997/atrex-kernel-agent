@@ -283,15 +283,8 @@ class RunSessionCharacterizationTest(unittest.TestCase):
                     cwd: Path,
                     timeout: int,
                     env: dict | None = None,
-                    input_text: str | None = None,
                 ) -> tuple[str, str, int, bool]:
-                    captured.update(
-                        command=command,
-                        cwd=cwd,
-                        timeout=timeout,
-                        env=env,
-                        input_text=input_text,
-                    )
+                    captured.update(command=command, cwd=cwd, timeout=timeout, env=env)
                     stdout = (
                         "\n".join(
                             [
@@ -427,26 +420,6 @@ class BoundedProcessCharacterizationTest(unittest.TestCase):
         self.assertEqual(stdout.strip(), "stdout")
         self.assertEqual(stderr.strip(), "stderr")
         self.assertEqual(returncode, 7)
-        self.assertFalse(timed_out)
-
-    def test_bounded_process_streams_oversized_input_without_argv_growth(self) -> None:
-        prompt = "x" * 3_000_000
-        command = [
-            sys.executable,
-            "-c",
-            "import sys; print(len(sys.stdin.read()))",
-        ]
-        with tempfile.TemporaryDirectory(prefix="bounded-stdin-") as temp_dir:
-            stdout, stderr, returncode, timed_out = optimize._run_bounded(
-                command,
-                cwd=Path(temp_dir),
-                timeout=5,
-                env=optimize.os.environ.copy(),
-                input_text=prompt,
-            )
-        self.assertEqual(stdout.strip(), str(len(prompt)))
-        self.assertEqual(stderr, "")
-        self.assertEqual(returncode, 0)
         self.assertFalse(timed_out)
 
     def test_bounded_process_marks_timeout_and_terminates_the_session_group(self) -> None:
