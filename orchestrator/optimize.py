@@ -300,7 +300,7 @@ def dispatch_framework_campaigns(
                 process_groups.add(os.getpgid(proc.pid))
             except ProcessLookupError:
                 continue
-            for pid, _argv in _descendant_process_commands(proc.pid):
+            for pid, _argv in _agent_runtime.descendant_process_commands(proc.pid):
                 try:
                     process_groups.add(os.getpgid(pid))
                 except ProcessLookupError:

@@ -112,6 +112,45 @@ class OptimizeFrameworkDispatchTest(unittest.TestCase):
                 cmd[cmd.index("--optimization-mode") + 1], "production"
             )
 
+    def test_dispatch_interrupt_discovers_and_stops_descendant_groups(self) -> None:
+        class InterruptedProcess:
+            pid = 1000
+            returncode: int | None = None
+
+            def wait(self, timeout: int | None = None) -> int:
+                if timeout is None:
+                    raise KeyboardInterrupt
+                self.returncode = 130
+                return self.returncode
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+        process = InterruptedProcess()
+        with tempfile.TemporaryDirectory(prefix="optimize-dispatch-stop-test-") as temp_dir:
+            with (
+                mock.patch.object(optimize.subprocess, "Popen", return_value=process),
+                mock.patch.object(
+                    optimize._agent_runtime,
+                    "descendant_process_commands",
+                    return_value=[(1001, ["claude"])],
+                ) as descendants,
+                mock.patch.object(optimize.os, "getpgid", side_effect=lambda pid: pid),
+                mock.patch.object(optimize.os, "killpg") as killpg,
+            ):
+                result = optimize.dispatch_framework_campaigns(
+                    ["--platform", "H20"],
+                    ("Triton",),
+                    Path(temp_dir),
+                    "sm_90",
+                    "H20",
+                )
+
+        self.assertEqual(result, 130)
+        descendants.assert_called_once_with(1000)
+        killpg.assert_any_call(1000, optimize.signal.SIGINT)
+        killpg.assert_any_call(1001, optimize.signal.SIGTERM)
+
     def test_suffix_produces_flat_workspace_names(self) -> None:
         campaign = optimize.Campaign(
             name="attention_forward",
