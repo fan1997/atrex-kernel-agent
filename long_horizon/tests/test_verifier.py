@@ -194,6 +194,17 @@ class GatewayCommandTests(unittest.TestCase):
             self.assertEqual(json.loads(artifact.read_text(encoding="utf-8")), payload)
             self.assertEqual(artifact.name, "result.json")
             self.assertFalse(result.artifact.startswith("remote:"))
+            request_paths = list(
+                workspace.glob(
+                    "aggregate_kernels/.atrex_long_horizon_verify/*/request.json"
+                )
+            )
+            self.assertEqual(len(request_paths), 1)
+            request = json.loads(request_paths[0].read_text(encoding="utf-8"))
+            self.assertEqual(request["run_timeout_seconds"], 100)
+            command = request["command"]
+            timeout_index = command.index("--candidate-timeout-s")
+            self.assertEqual(command[timeout_index + 1], "100")
             self.assertEqual(run_git(workspace, "status", "--porcelain"), "")
 
     def test_current_sandbox_dry_run_packages_abba_driver_as_evaluator_input(self) -> None:

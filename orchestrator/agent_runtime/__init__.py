@@ -44,6 +44,7 @@ from .runtime import (
     build_agent_runtime,
     build_session_command,
     build_session_environment,
+    prepare_prompt_transport,
     token_usage_from_stream,
 )
 
@@ -76,6 +77,7 @@ __all__ = [
     "build_agent_runtime",
     "build_session_command",
     "build_session_environment",
+    "prepare_prompt_transport",
     "codex_settings_args",
     "dependency_process_violation",
     "pi_settings_args",

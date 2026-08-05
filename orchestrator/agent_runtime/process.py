@@ -24,6 +24,7 @@ class ProcessRunner(Protocol):
         cwd: Path,
         timeout: int,
         env: dict | None = None,
+        input_text: str | None = None,
     ) -> tuple[str, str, int, bool]:
         ...
 
@@ -390,12 +391,13 @@ def run_bounded(
     cwd: Path,
     timeout: int,
     env: dict | None = None,
+    input_text: str | None = None,
 ) -> tuple[str, str, int, bool]:
     """Run a command in its own process group with timeout and policy enforcement."""
     proc = subprocess.Popen(
         command,
         cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -413,7 +415,7 @@ def run_bounded(
     guard.start()
     timed_out = False
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input_text, timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         process_groups = descendant_process_groups(proc.pid)

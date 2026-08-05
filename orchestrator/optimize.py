@@ -507,10 +507,14 @@ def _dependency_process_violation(argv: list[str]) -> Optional[str]:
 
 
 def _run_bounded(
-    cmd: list[str], cwd: Path, timeout: int, env: Optional[dict] = None
+    cmd: list[str],
+    cwd: Path,
+    timeout: int,
+    env: Optional[dict] = None,
+    input_text: str | None = None,
 ) -> tuple[str, str, int, bool]:
     """Compatibility route to the extracted runtime process supervisor."""
-    return _agent_runtime.run_bounded(cmd, cwd, timeout, env)
+    return _agent_runtime.run_bounded(cmd, cwd, timeout, env, input_text)
 
 def _session_env(agent_cli: str) -> dict:
     """Compatibility route to the extracted runtime environment builder."""

@@ -207,11 +207,23 @@ class GatewayABBAValidator:
         }
         request_relative = f"{relative_dir}/request.json"
         result_relative = f"{relative_dir}/result.json"
+        # The outer subprocess timeout alone does not relax the evaluator's own
+        # candidate/import watchdog.  Apply the same budget explicitly so a cold
+        # incumbent (for example, a load_inline CUDA kernel) remains verifiable.
+        evaluator_command = [
+            "python3",
+            "test_kernel.py",
+            "--version",
+            "vlong",
+            "--no-memory",
+            "--candidate-timeout-s",
+            str(self.per_run_timeout),
+        ]
         request = {
             "schema_version": 1,
             "schedule": schedule,
             "manifests": manifests,
-            "command": ["python3", "test_kernel.py", "--version", "vlong", "--no-memory"],
+            "command": evaluator_command,
             "run_timeout_seconds": self.per_run_timeout,
         }
         atomic_write_json(workspace / request_relative, request)

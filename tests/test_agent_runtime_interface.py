@@ -27,9 +27,19 @@ class AgentRuntimeInterfaceTest(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def process_runner(
-            command: list[str], cwd: Path, timeout: int, env: dict | None = None
+            command: list[str],
+            cwd: Path,
+            timeout: int,
+            env: dict | None = None,
+            input_text: str | None = None,
         ) -> tuple[str, str, int, bool]:
-            captured.update(command=command, cwd=cwd, timeout=timeout, env=env)
+            captured.update(
+                command=command,
+                cwd=cwd,
+                timeout=timeout,
+                env=env,
+                input_text=input_text,
+            )
             return (
                 '{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":2}}',
                 "stderr",
@@ -58,7 +68,9 @@ class AgentRuntimeInterfaceTest(unittest.TestCase):
         self.assertEqual(captured["timeout"], 123)
         command = captured["command"]
         self.assertEqual(command[:2], ["codex", "exec"])
-        self.assertEqual(command[-1], "one bounded iteration")
+        self.assertEqual(command[-1], "-")
+        self.assertNotIn("one bounded iteration", command)
+        self.assertEqual(captured["input_text"], "one bounded iteration")
         environment = captured["env"]
         self.assertEqual(environment["IS_SANDBOX"], "1")
         self.assertEqual(environment["ATREX_SANDBOX_GPU"], "REMOTE_GPU")
@@ -83,6 +95,25 @@ class AgentRuntimeInterfaceTest(unittest.TestCase):
         self.assertEqual([event.kind for event in result.events], ["terminal_usage"])
         self.assertFalse(result.capabilities.usage_delta_observed)
         self.assertEqual(result.stderr_tail, "stderr")
+
+    def test_oversized_claude_prompt_is_streamed_instead_of_put_in_argv(self) -> None:
+        captured: dict[str, object] = {}
+
+        def process_runner(command, cwd, timeout, env=None, input_text=None):
+            captured.update(command=command, input_text=input_text)
+            return '{"type":"result","usage":{"input_tokens":1}}', "", 0, False
+
+        prompt = "long-horizon evidence\n" + "x" * 3_000_000
+        with tempfile.TemporaryDirectory(prefix="agent-runtime-large-prompt-") as temp_dir:
+            build_agent_runtime("claude", process_runner=process_runner).run(
+                AgentRunRequest(
+                    workspace=Path(temp_dir), prompt=prompt, timeout_s=10
+                )
+            )
+
+        self.assertEqual(captured["input_text"], prompt)
+        self.assertNotIn(prompt, captured["command"])
+        self.assertLess(sum(len(part) for part in captured["command"]), 10_000)
 
     def test_adapter_normalizes_message_deltas_separately_from_terminal_usage(self) -> None:
         stdout = "\n".join(
@@ -132,7 +163,7 @@ class AgentRuntimeInterfaceTest(unittest.TestCase):
         registry.register("fake", lambda humanize_dir: FakeAdapter())
         captured: dict[str, object] = {}
 
-        def process_runner(command, cwd, timeout, env=None):
+        def process_runner(command, cwd, timeout, env=None, input_text=None):
             captured["command"] = command
             return "", "", 0, False
 

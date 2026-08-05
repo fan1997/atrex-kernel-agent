@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from orchestrator import optimize as base
+from orchestrator.agent_runtime import prepare_prompt_transport
 from orchestrator.optimization_policy import install_workspace_policy
 
 
@@ -157,9 +158,23 @@ def session_id_from_stream(agent_cli: str, stdout: str, requested_session_id: st
 
 
 def run_bounded(
-    command: list[str], workspace: Path, timeout: int, environment: dict[str, str]
+    command: list[str],
+    workspace: Path,
+    timeout: int,
+    environment: dict[str, str],
+    input_text: str | None = None,
 ) -> tuple[str, str, int, bool]:
-    return base._run_bounded(command, workspace, timeout, environment)
+    return base._run_bounded(
+        command, workspace, timeout, environment, input_text=input_text
+    )
+
+
+def session_prompt_transport(
+    agent_cli: str, command: list[str], prompt: str
+) -> tuple[list[str], str | None]:
+    return prepare_prompt_transport(
+        agent_cli, command, prompt, humanize_dir=base.HUMANIZE_DIR
+    )
 
 
 def tokens_from_stream(stdout: str) -> int:
