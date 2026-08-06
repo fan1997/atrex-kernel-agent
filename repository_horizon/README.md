@@ -3,8 +3,23 @@
 `repository_horizon` is an opt-in Long Horizon overlay for Python/JIT operator
 libraries such as FA4. It snapshots an exact upstream Git commit into the
 campaign, keeps the adapter and evaluator immutable, admits candidates only
-under manifest-declared source roots, and verifies promotion with a single
-Agate `dev --working-dir` allocation using A-B-B-A.
+under manifest-declared source roots, and verifies promotion with Agate
+`dev --working-dir`.
+
+With `bringup.mode=auto`, the locked source snapshot is R0 rather than an
+assumed runnable V0. Repository Horizon first runs a candidate-only capability
+probe. If R0 passes, it becomes V0 without an agent episode. If it fails, Long
+Horizon enters a correctness-only pre-V0 phase; failed episodes are recorded as
+`memory/bootstrap_eXXXX.json` and the first correct source commit becomes V0.
+V1 and later return to same-allocation A-B-B-A performance promotion. Existing
+manifests default to `bringup.mode=disabled` and retain the original behavior.
+
+`repository_search.mode=replay_strict` exposes a separate bare Git corpus that
+contains only R0 and its ancestors. It is linked into episode worktrees for
+source archaeology but excluded from Git and Agate staging. Declared excluded
+answer commits must be physically absent. `allowlist` is available for
+production campaigns that explicitly lock additional refs; arbitrary pull refs
+and network discovery are never implicit.
 
 Example:
 
@@ -33,11 +48,16 @@ temporary bridge for missing image dependencies; normal production recipes
 should prefer image-installed dependencies and remove the corresponding
 `runtime_support` declaration.
 
-The FA4 recipe starts from the same auditable strategy as Mudi V0: unpack each
-request's P64 or P128 paged KV and call official `flash_attn_func`. This is
-correct but slow, giving the agent a runnable path from open-source FA4 toward
-direct paged dispatch and the specialized HD256 2CTA implementation. The exact
-Mudi evidence available on the development machine is:
+The FA4 recipe locks official FA4 commit `b54df166` and uses a fixed native
+`flash_attn_varlen_func` adapter with `seqused_k` and `page_table`. It does not
+unpack paged KV into a dense fallback. At R0 the SM103 HD256 dispatch rejects
+this capability, so the campaign must repair the real repository implementation
+before it can create V0. Mudi PR #2726 commit `3e18806f` is declared as an
+excluded hidden answer and is permitted only as an external validation fixture.
+The example recipe requires a 1% A-B-B-A improvement after V0 so sub-percent
+timing noise cannot promote a no-op repository change; manifests may choose a
+different workload-appropriate threshold.
+The exact Mudi evidence available on the development machine is:
 
 ```text
 /Users/ruibo/work/trace/aka_fa4_history/kernel_opt_fa4_b300

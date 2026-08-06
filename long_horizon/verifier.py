@@ -66,6 +66,7 @@ def score_verification_payload(
     repeats: int,
     min_improvement_pct: float,
     artifact: str = "",
+    candidate_only: bool = False,
 ) -> VerificationResult:
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         return VerificationResult("ERROR", None, None, None, error="unsupported result schema")
@@ -91,7 +92,7 @@ def score_verification_payload(
     if actual != schedule:
         return VerificationResult(
             "ERROR", None, None, None, runs=runs,
-            error="remote verifier did not execute the exact ABBA schedule", artifact=artifact,
+            error="remote verifier did not execute the exact verification schedule", artifact=artifact,
         )
     candidate_values = [
         value for run in runs if run.revision == "candidate" and run.exit_code == 0
@@ -103,6 +104,20 @@ def score_verification_payload(
     ]
     candidate = _geomean(candidate_values)
     incumbent = _geomean(incumbent_values)
+    if candidate_only:
+        if len(candidate_values) != repeats:
+            return VerificationResult(
+                "FAIL",
+                candidate,
+                None,
+                None,
+                runs=runs,
+                error="not every authoritative candidate-only run passed",
+                artifact=artifact,
+            )
+        return VerificationResult(
+            "PASS", candidate, None, None, runs=runs, artifact=artifact
+        )
     if len(candidate_values) != repeats or len(incumbent_values) != repeats:
         return VerificationResult(
             "FAIL", candidate, incumbent, None, runs=runs,

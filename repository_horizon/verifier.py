@@ -27,6 +27,7 @@ class RepositoryABBAValidator:
         min_improvement_pct: float | None = None,
         wait_timeout: int = 14_400,
         max_packed_bytes: int = 900_000,
+        candidate_only: bool = False,
     ):
         self.manifest = manifest
         self.atrex_bench_root = atrex_bench_root
@@ -43,6 +44,7 @@ class RepositoryABBAValidator:
         )
         self.wait_timeout = wait_timeout
         self.max_packed_bytes = max_packed_bytes
+        self.candidate_only = candidate_only
 
     def verify(
         self,
@@ -52,14 +54,21 @@ class RepositoryABBAValidator:
         candidate_commit: str,
         changed_paths: list[str],
     ) -> VerificationResult:
-        schedule = verification_schedule(self.repeats)
+        schedule = (
+            [
+                {"revision": "candidate", "repeat": repeat}
+                for repeat in range(self.repeats)
+            ]
+            if self.candidate_only
+            else verification_schedule(self.repeats)
+        )
         if self.per_run_timeout * len(schedule) + 30 > self.timeout:
             return VerificationResult(
                 "ERROR",
                 None,
                 None,
                 None,
-                error="repository ABBA schedule cannot fit in one Agate allocation timeout",
+                error="repository verification schedule cannot fit in one Agate allocation timeout",
             )
         runtime_root = workspace / ".repository_horizon_runtime" / "verifications"
         runtime_root.mkdir(parents=True, exist_ok=True)
@@ -119,6 +128,7 @@ class RepositoryABBAValidator:
                 repeats=self.repeats,
                 min_improvement_pct=self.min_improvement_pct,
                 artifact=str(evidence_path),
+                candidate_only=self.candidate_only,
             )
         except Exception as exc:
             return VerificationResult(

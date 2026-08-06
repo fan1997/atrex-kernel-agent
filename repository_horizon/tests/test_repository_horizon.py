@@ -11,10 +11,14 @@ from types import SimpleNamespace
 from unittest import mock
 
 from long_horizon.git_episode import EpisodeWorktree, git_head, promote_candidate
+from long_horizon.models import VerificationResult, VerificationRun
 from long_horizon.tests.helpers import init_repo, run_git
 from long_horizon.verifier import verification_schedule
 from repository_horizon.candidate import RepositoryCandidateContract
+from repository_horizon.corpus import CORPUS_RELATIVE, validate_source_corpus
+from repository_horizon.integration import RepositoryIntegration
 from repository_horizon.manifest import RuntimeSupportWheel, load_manifest
+from repository_horizon.policy import install_repository_policy
 from repository_horizon.seed import seed_workspace
 from repository_horizon.staging import build_abba_stage
 from repository_horizon.support_wheel import extract_support_wheel
@@ -35,7 +39,12 @@ def make_source(root: Path) -> tuple[Path, str]:
 
 
 def make_manifest(
-    root: Path, revision: str, runtime_support: list[dict] | None = None
+    root: Path,
+    revision: str,
+    runtime_support: list[dict] | None = None,
+    *,
+    repository_search: dict | None = None,
+    bringup: dict | None = None,
 ) -> Path:
     (root / "adapter.py").write_text("VALUE = 0\n", encoding="utf-8")
     path = root / "repository.json"
@@ -54,6 +63,10 @@ def make_manifest(
     }
     if runtime_support is not None:
         payload["runtime_support"] = runtime_support
+    if repository_search is not None:
+        payload["repository_search"] = repository_search
+    if bringup is not None:
+        payload["bringup"] = bringup
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -87,6 +100,31 @@ def support_manifest() -> list[dict]:
 
 
 class RepositoryContractTests(unittest.TestCase):
+    def test_repository_policy_remains_clean_after_generic_runtime_relink(self) -> None:
+        from orchestrator.optimization_policy import install_workspace_policy
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, revision = make_source(root)
+            manifest = load_manifest(make_manifest(root, revision))
+            workspace = root / "workspace"
+            install_workspace_policy(workspace, "production", "CuteDSL")
+            install_repository_policy(workspace, manifest)
+            first = (workspace / "CLAUDE.md").read_bytes()
+            install_workspace_policy(workspace, "production", "CuteDSL")
+            install_repository_policy(workspace, manifest)
+            self.assertEqual((workspace / "CLAUDE.md").read_bytes(), first)
+            self.assertIn(b"locked `flash_attention` source", first)
+
+    def test_legacy_manifest_defaults_preserve_snapshot_v0_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, revision = make_source(root)
+            manifest = load_manifest(make_manifest(root, revision))
+            self.assertEqual(manifest.repository_search.mode, "snapshot")
+            self.assertFalse(manifest.repository_search.require_report)
+            self.assertEqual(manifest.bringup.mode, "disabled")
+
     def test_source_change_is_candidate_and_adapter_is_protected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -104,6 +142,71 @@ class RepositoryContractTests(unittest.TestCase):
                 "undeclared",
                 contract.validate_changed_paths(["vendor/flash_attention/setup.py"]),
             )
+
+    def test_pre_v0_candidate_requires_a_repository_search_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, revision = make_source(root)
+            manifest = load_manifest(
+                make_manifest(
+                    root,
+                    revision,
+                    repository_search={"mode": "replay_strict"},
+                    bringup={"mode": "auto"},
+                )
+            )
+            contract = RepositoryCandidateContract(manifest)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            self.assertIn(
+                "requires plans/repository_search.json",
+                contract.workspace_violations(None, workspace)[0],
+            )
+            (workspace / "plans").mkdir()
+            (workspace / "plans" / "repository_search.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "source_revision": revision,
+                        "queries": ["HD256 seqused_k page table"],
+                        "candidates": [{"commit": revision, "path": "flash_attn/cute/kernel.py"}],
+                        "selected": {
+                            "commit": revision,
+                            "path": "flash_attn/cute/kernel.py",
+                            "gap": "paged dispatch",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch(
+                    "repository_horizon.candidate.validate_source_corpus",
+                    return_value=[],
+                ),
+                mock.patch(
+                    "repository_horizon.candidate.corpus_has_commit",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "repository_horizon.candidate.corpus_has_path",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "repository_horizon.candidate.read_catalog",
+                    return_value={"schema_version": 1},
+                ),
+            ):
+                self.assertEqual(
+                    contract.workspace_violations(
+                        SimpleNamespace(workspace=workspace), workspace
+                    ),
+                    [],
+                )
+            (workspace / "memory").mkdir()
+            (workspace / "memory" / "v0.json").write_text("{}\n", encoding="utf-8")
+            (workspace / "plans" / "repository_search.json").unlink()
+            self.assertEqual(contract.workspace_violations(None, workspace), [])
 
     def test_validation_and_promotion_share_repository_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -150,6 +253,179 @@ class RepositoryContractTests(unittest.TestCase):
 
 
 class SeedAndStagingTests(unittest.TestCase):
+    @staticmethod
+    def _campaign_fixture(root: Path) -> SimpleNamespace:
+        op = root / "op"
+        op.mkdir()
+        for name in ("reference.py", "input.py"):
+            (op / name).write_text("# fixture\n", encoding="utf-8")
+        (op / "shapes.json").write_text('{"0": {}}\n', encoding="utf-8")
+        bench = root / "atrex-bench"
+        (bench / "src" / "atrex_bench").mkdir(parents=True)
+        (bench / "src" / "atrex_bench" / "__init__.py").write_text(
+            "", encoding="utf-8"
+        )
+        (bench / "scripts").mkdir()
+        (bench / "scripts" / "run_eval.py").write_text(
+            "# fixture\n", encoding="utf-8"
+        )
+        return SimpleNamespace(
+            workspace=root / "campaign",
+            kernel_demo=str(op / "reference.py"),
+            atrex_bench_root=str(bench),
+            framework="CuteDSL",
+            framework_baseline="never",
+            sandbox_hardware="REMOTE_GPU",
+            sandbox_profile="",
+            sandbox_url="",
+            sandbox_timeout=600,
+        )
+
+    def test_replay_strict_corpus_contains_only_r0_ancestry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, first = make_source(root)
+            kernel = source / "flash_attn" / "cute" / "kernel.py"
+            kernel.write_text("VALUE = 2\n", encoding="utf-8")
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "r0")
+            r0 = git_head(source)
+            kernel.write_text("VALUE = 3\n", encoding="utf-8")
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "hidden answer")
+            hidden = git_head(source)
+            manifest = load_manifest(
+                make_manifest(
+                    root,
+                    r0,
+                    repository_search={
+                        "mode": "replay_strict",
+                        "excluded_commits": [hidden],
+                    },
+                    bringup={"mode": "auto"},
+                )
+            )
+            campaign = self._campaign_fixture(root)
+            with mock.patch("repository_horizon.seed.main_adapter.link_episode_runtime"):
+                seed_workspace(campaign, manifest, source)
+            corpus = campaign.workspace / CORPUS_RELATIVE
+            commits = run_git(corpus, "rev-list", "--all").splitlines()
+            self.assertEqual(set(commits), {first, r0})
+            missing = subprocess.run(
+                ["git", "cat-file", "-e", f"{hidden}^{{commit}}"],
+                cwd=corpus,
+                capture_output=True,
+            )
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertTrue((campaign.workspace / "memory" / "r0.json").is_file())
+            self.assertFalse((campaign.workspace / "memory" / "v0.json").exists())
+            catalog = json.loads(
+                (campaign.workspace / "source_corpus.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(validate_source_corpus(campaign.workspace, catalog), [])
+            run_git(
+                corpus,
+                "fetch",
+                "--no-tags",
+                str(source),
+                f"{hidden}:refs/heads/leaked",
+            )
+            violations = validate_source_corpus(campaign.workspace, catalog)
+            self.assertTrue(
+                any("physical object set changed" in value for value in violations)
+            )
+            self.assertTrue(any("excluded commit" in value for value in violations))
+
+    def test_allowlist_corpus_fetches_only_explicit_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, r0 = make_source(root)
+            run_git(source, "checkout", "-b", "allowed")
+            allowed_file = source / "flash_attn" / "cute" / "allowed.py"
+            allowed_file.write_text("VALUE = 2\n", encoding="utf-8")
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "allowed technique")
+            allowed = git_head(source)
+            run_git(source, "checkout", "-b", "hidden", r0)
+            hidden_file = source / "flash_attn" / "cute" / "hidden.py"
+            hidden_file.write_text("VALUE = 3\n", encoding="utf-8")
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "hidden answer")
+            hidden = git_head(source)
+            manifest = load_manifest(
+                make_manifest(
+                    root,
+                    r0,
+                    repository_search={
+                        "mode": "allowlist",
+                        "refs": ["allowed"],
+                        "excluded_commits": [hidden],
+                    },
+                    bringup={"mode": "auto"},
+                )
+            )
+            campaign = self._campaign_fixture(root)
+            with mock.patch("repository_horizon.seed.main_adapter.link_episode_runtime"):
+                seed_workspace(campaign, manifest, source)
+            corpus = campaign.workspace / CORPUS_RELATIVE
+            self.assertEqual(run_git(corpus, "rev-parse", "refs/heads/ref_0000"), allowed)
+            missing = subprocess.run(
+                ["git", "cat-file", "-e", f"{hidden}^{{commit}}"],
+                cwd=corpus,
+                capture_output=True,
+            )
+            self.assertNotEqual(missing.returncode, 0)
+
+    def test_r0_probe_failure_stays_pre_v0_and_pass_uses_zero_round_fast_path(self) -> None:
+        for passed in (False, True):
+            with self.subTest(passed=passed), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                source, revision = make_source(root)
+                manifest = load_manifest(
+                    make_manifest(
+                        root,
+                        revision,
+                        repository_search={"mode": "replay_strict"},
+                        bringup={"mode": "auto"},
+                    )
+                )
+                campaign = self._campaign_fixture(root)
+                integration = RepositoryIntegration(manifest, source)
+                run = VerificationRun(
+                    "candidate",
+                    0,
+                    0 if passed else 1,
+                    {"all_pass": passed, "latency_us_geomean": 7.0} if passed else None,
+                )
+                result = VerificationResult(
+                    "PASS" if passed else "FAIL",
+                    7.0 if passed else None,
+                    None,
+                    None,
+                    runs=[run],
+                    error="" if passed else "unsupported official workload",
+                )
+                with (
+                    mock.patch("repository_horizon.seed.main_adapter.link_episode_runtime"),
+                    mock.patch("repository_horizon.integration.RepositoryABBAValidator") as validator,
+                ):
+                    validator.return_value.verify.return_value = result
+                    integration.prepare_campaign(campaign)
+                self.assertTrue((campaign.workspace / "memory" / "r0.json").is_file())
+                self.assertEqual((campaign.workspace / "memory" / "v0.json").is_file(), passed)
+                r0_memory = json.loads(
+                    (campaign.workspace / "memory" / "r0.json").read_text(encoding="utf-8")
+                )
+                if passed:
+                    v0 = json.loads(
+                        (campaign.workspace / "memory" / "v0.json").read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(v0["quality_gate"]["result"], "PASS")
+                    self.assertEqual(v0["version"], "v0")
+                else:
+                    self.assertEqual(r0_memory["quality_gate"]["result"], "BRINGUP_REQUIRED")
+                self.assertEqual(run_git(campaign.workspace, "status", "--porcelain"), "")
+
     def test_seed_uses_exact_git_archive_and_stage_is_base_plus_delta(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -188,6 +464,15 @@ class SeedAndStagingTests(unittest.TestCase):
             )
             self.assertEqual(vendor_file.read_text(encoding="utf-8"), "VALUE = 1\n")
             self.assertTrue((campaign.workspace / "source.lock.json").is_file())
+            self.assertIn(
+                "Repository-assisted production mode",
+                (campaign.workspace / "CLAUDE.md").read_text(encoding="utf-8"),
+            )
+            with mock.patch(
+                "repository_horizon.seed.main_adapter.link_episode_runtime"
+            ):
+                seed_workspace(campaign, manifest, source)
+            self.assertEqual(run_git(campaign.workspace, "status", "--porcelain"), "")
             base = git_head(campaign.workspace)
             vendor_file.write_text("VALUE = 2\n", encoding="utf-8")
             run_git(campaign.workspace, "add", ".")

@@ -55,6 +55,33 @@
         "additionalProperties": false
       }
     },
+    "repository_search": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": ["snapshot", "replay_strict", "allowlist"],
+          "default": "snapshot"
+        },
+        "refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "excluded_commits": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        },
+        "require_report": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "bringup": {
+      "type": "object",
+      "properties": {
+        "mode": {"enum": ["disabled", "auto"], "default": "disabled"},
+        "probe_repeats": {"type": "integer", "minimum": 1, "default": 1}
+      },
+      "additionalProperties": false
+    },
     "measurement": {"type": "object"}
   },
   "additionalProperties": false

@@ -14,6 +14,7 @@ from .git_episode import (
     git_head,
     git_text,
     promote_candidate,
+    record_bootstrap_outcome,
     record_episode_outcome,
     working_changes,
 )
@@ -238,6 +239,7 @@ class LongHorizonCampaign:
         directions = (
             outcome.get("next_directions", []) if isinstance(outcome, dict) else []
         )
+        bringup = verification.incumbent_latency_us is None
         return {
             "version": f"v{version}",
             "masked": False,
@@ -261,11 +263,17 @@ class LongHorizonCampaign:
                 "authoritative_improvement_pct": verification.improvement_pct,
             },
             "optimization": {
-                "action_category": "long_horizon_episode",
+                "action_category": (
+                    "repository_bringup" if bringup else "long_horizon_episode"
+                ),
                 "action_description": str(
                     outcome.get("summary", "verified long-horizon candidate")
                 ),
-                "expected_impact": "independently verified incumbent/candidate latency reduction",
+                "expected_impact": (
+                    "first independently verified repository-backed workload implementation"
+                    if bringup
+                    else "independently verified incumbent/candidate latency reduction"
+                ),
                 "risks_and_rollback": "candidate retained on isolated episode branch",
             },
             "profile_evidence": {
@@ -485,6 +493,7 @@ class LongHorizonCampaign:
             else None
         )
         phase = str(active.get("phase", ""))
+        bootstrap = bool(active.get("bootstrap"))
         memory_version = int(active.get("memory_version", 0) or 0)
         terminal_status = str(active.get("terminal_status", ""))
         already_recorded = any(
@@ -508,7 +517,7 @@ class LongHorizonCampaign:
                 == f"episode {episode}: promote verified long-horizon candidate"
                 and bool(evidence)
             )
-            outcome_recorded = (
+            ordinary_outcome_recorded = (
                 phase in {"recording", "recorded"}
                 and memory_version > 0
                 and bool(terminal_status)
@@ -524,6 +533,22 @@ class LongHorizonCampaign:
                     )
                 )
             )
+            bootstrap_outcome_recorded = (
+                phase in {"recording", "recorded"}
+                and bootstrap
+                and bool(terminal_status)
+                and parent == base_commit
+                and message == f"bootstrap episode {episode}: {terminal_status}"
+                and bool(
+                    git_text(
+                        self.workspace,
+                        "show",
+                        f"HEAD:memory/bootstrap_e{episode:04d}.json",
+                        check=False,
+                    )
+                )
+            )
+            outcome_recorded = ordinary_outcome_recorded or bootstrap_outcome_recorded
             if not (promoted or outcome_recorded):
                 raise RuntimeError(
                     "incumbent advanced during an interrupted episode without proof"
@@ -661,9 +686,17 @@ class LongHorizonCampaign:
 
         while True:
             blocked_retry_pending = self._blocked_retry_pending(state)
+            bootstrap_pending = main_adapter.latest_version(self.workspace) < 0
             conversion_pending = main_adapter.conversion_required(
                 self.base_campaign, state.consecutive_without_promotion, self.workspace
             )
+            if (
+                bootstrap_pending
+                and state.episodes >= self.max_episodes
+                and not blocked_retry_pending
+            ):
+                reason = "bootstrap: max-episodes"
+                break
             if self.max_version is not None and not blocked_retry_pending:
                 if main_adapter.latest_version(self.workspace) >= self.max_version:
                     if conversion_pending:
@@ -710,6 +743,7 @@ class LongHorizonCampaign:
                 "episode_branch": worktree.branch,
                 "worktree": str(worktree.path),
                 "phase": "preparing",
+                "bootstrap": bootstrap_pending,
             }
             store.save_active(active)
             worktree.materialize(self.workspace)
@@ -945,14 +979,29 @@ class LongHorizonCampaign:
                     journal=journal,
                     candidate_commit=candidate_commit,
                 )
-                outcome_commit = record_episode_outcome(
-                    self.workspace,
-                    base_commit=base_commit,
-                    version=memory_version,
-                    episode=episode,
-                    status=status,
-                    memory_record=memory,
-                )
+                if bootstrap_pending:
+                    memory["version"] = f"bootstrap-e{episode}"
+                    memory["long_horizon"] = {
+                        **(memory.get("long_horizon") or {}),
+                        "bootstrap": True,
+                        "canonical_version_created": False,
+                    }
+                    outcome_commit = record_bootstrap_outcome(
+                        self.workspace,
+                        base_commit=base_commit,
+                        episode=episode,
+                        status=status,
+                        memory_record=memory,
+                    )
+                else:
+                    outcome_commit = record_episode_outcome(
+                        self.workspace,
+                        base_commit=base_commit,
+                        version=memory_version,
+                        episode=episode,
+                        status=status,
+                        memory_record=memory,
+                    )
                 attempt["outcome_commit"] = outcome_commit
                 state.consecutive_without_promotion += 1
                 main_adapter.save_stall(
@@ -966,13 +1015,14 @@ class LongHorizonCampaign:
                     state.protocol_failures += 1
                 else:
                     state.rejected += 1
-            main_adapter.notify_iteration(
-                self.base_campaign,
-                memory_version,
-                memory,
-                accepted,
-                verification.incumbent_latency_us if verification else None,
-            )
+            if accepted or not bootstrap_pending:
+                main_adapter.notify_iteration(
+                    self.base_campaign,
+                    memory_version,
+                    memory,
+                    accepted,
+                    verification.incumbent_latency_us if verification else None,
+                )
             store.archive_attempt(episode, attempt)
             state.attempts.append(attempt)
             store.save_state(state)

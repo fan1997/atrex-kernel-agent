@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,24 @@ class RuntimeSupportWheel:
 
 
 @dataclass(frozen=True)
+class RepositorySearchConfig:
+    """Immutable upstream history exposed to repository episodes."""
+
+    mode: str = "snapshot"
+    refs: tuple[str, ...] = ()
+    excluded_commits: tuple[str, ...] = ()
+    require_report: bool = False
+
+
+@dataclass(frozen=True)
+class BringupConfig:
+    """Policy for turning an initially unsupported source snapshot into V0."""
+
+    mode: str = "disabled"
+    probe_repeats: int = 1
+
+
+@dataclass(frozen=True)
 class RepositoryManifest:
     path: Path
     name: str
@@ -47,6 +66,8 @@ class RepositoryManifest:
     measurement: MeasurementConfig
     runtime_requirements: tuple[RuntimeRequirement, ...]
     runtime_support: tuple[RuntimeSupportWheel, ...]
+    repository_search: RepositorySearchConfig
+    bringup: BringupConfig
 
     @property
     def vendor_root(self) -> str:
@@ -76,6 +97,21 @@ def _package_name(value: Any, field: str) -> str:
     if any(not part.isidentifier() for part in package.split(".")):
         raise ValueError(f"{field} must be a dotted Python package name")
     return package
+
+
+def _optional_strings(value: Any, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list")
+    return tuple(_nonempty_string(item, field) for item in value)
+
+
+def _commit_ids(value: Any, field: str) -> tuple[str, ...]:
+    commits = _optional_strings(value, field)
+    if any(re.fullmatch(r"[0-9a-f]{40}", item) is None for item in commits):
+        raise ValueError(f"{field} entries must be full lowercase commit ids")
+    return commits
 
 
 def load_manifest(path: str | Path) -> RepositoryManifest:
@@ -163,6 +199,46 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
                 generate_minimal_init=bool(item.get("generate_minimal_init", True)),
             )
         )
+    search_payload = payload.get("repository_search") or {}
+    if not isinstance(search_payload, dict):
+        raise ValueError("repository_search must be an object")
+    search_mode = _nonempty_string(
+        search_payload.get("mode", "snapshot"), "repository_search.mode"
+    )
+    if search_mode not in {"snapshot", "replay_strict", "allowlist"}:
+        raise ValueError(
+            "repository_search.mode must be snapshot, replay_strict, or allowlist"
+        )
+    search_refs = _optional_strings(
+        search_payload.get("refs"), "repository_search.refs"
+    )
+    if search_mode == "replay_strict" and search_refs:
+        raise ValueError("replay_strict corpus cannot declare sibling refs")
+    if search_mode != "allowlist" and search_refs:
+        raise ValueError("repository_search.refs requires mode=allowlist")
+    repository_search = RepositorySearchConfig(
+        mode=search_mode,
+        refs=search_refs,
+        excluded_commits=_commit_ids(
+            search_payload.get("excluded_commits"),
+            "repository_search.excluded_commits",
+        ),
+        require_report=bool(
+            search_payload.get("require_report", search_mode != "snapshot")
+        ),
+    )
+    bringup_payload = payload.get("bringup") or {}
+    if not isinstance(bringup_payload, dict):
+        raise ValueError("bringup must be an object")
+    bringup_mode = _nonempty_string(
+        bringup_payload.get("mode", "disabled"), "bringup.mode"
+    )
+    if bringup_mode not in {"disabled", "auto"}:
+        raise ValueError("bringup.mode must be disabled or auto")
+    probe_repeats = int(bringup_payload.get("probe_repeats", 1))
+    if probe_repeats <= 0:
+        raise ValueError("bringup.probe_repeats must be positive")
+    bringup = BringupConfig(mode=bringup_mode, probe_repeats=probe_repeats)
     adapter_value = _nonempty_string(payload.get("adapter"), "adapter")
     adapter = (manifest_path.parent / adapter_value).resolve()
     if not adapter.is_file():
@@ -187,4 +263,6 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
         measurement=measurement,
         runtime_requirements=tuple(requirements),
         runtime_support=tuple(support),
+        repository_search=repository_search,
+        bringup=bringup,
     )

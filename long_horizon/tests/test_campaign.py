@@ -163,6 +163,36 @@ class FixedVerifier:
         )
 
 
+class BootstrapVerifier:
+    def __init__(self, passed: bool):
+        self.passed = passed
+
+    def verify(self, workspace, *, base_commit, candidate_commit, changed_paths):
+        latency = 8.0 if self.passed else None
+        runs = [
+            VerificationRun(
+                "candidate",
+                0,
+                0 if self.passed else 1,
+                {
+                    "all_pass": self.passed,
+                    "latency_us_geomean": latency,
+                    "latency_us_by_shape": {"0": latency},
+                }
+                if self.passed
+                else None,
+            )
+        ]
+        return VerificationResult(
+            "PASS" if self.passed else "FAIL",
+            latency,
+            None,
+            None,
+            runs=runs,
+            error="" if self.passed else "candidate is not correct",
+        )
+
+
 def fake_base(workspace: Path):
     return SimpleNamespace(
         workspace=workspace,
@@ -258,6 +288,78 @@ class CampaignIntegrationTests(unittest.TestCase):
             ),
             mock.patch("long_horizon.main_adapter.latest_version", return_value=0),
         )
+
+    def _bootstrap_patches(self):
+        return (
+            mock.patch("long_horizon.main_adapter.prepare_campaign", return_value=None),
+            mock.patch("long_horizon.main_adapter.link_episode_runtime", return_value=None),
+            mock.patch(
+                "long_horizon.main_adapter.episode_directives",
+                return_value={
+                    "hardware": "hardware",
+                    "sandbox": "sandbox",
+                    "evaluator": "evaluator",
+                    "mode_policy": "policy",
+                },
+            ),
+            mock.patch(
+                "long_horizon.main_adapter.iteration_playbook",
+                return_value="current main playbook",
+            ),
+        )
+
+    def test_failed_bootstrap_attempt_does_not_create_v0(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "campaign"
+            base = init_repo(repo)
+            patches = self._bootstrap_patches()
+            with patches[0], patches[1], patches[2], patches[3]:
+                base_campaign = fake_base(repo)
+                reason = LongHorizonCampaign(
+                    base_campaign=base_campaign,
+                    max_episodes=1,
+                    verifier=BootstrapVerifier(False),
+                    session_runner=CandidateRunner(20),
+                    worktree_root=root / "worktrees",
+                ).run()
+            self.assertEqual(reason, "bootstrap: max-episodes")
+            self.assertFalse((repo / "memory" / "v0.json").exists())
+            self.assertTrue((repo / "memory" / "bootstrap_e0001.json").is_file())
+            self.assertEqual(run_git(repo, "diff", base, "HEAD", "--", "kernel.py"), "")
+            memory = json.loads(
+                (repo / "memory" / "bootstrap_e0001.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(memory["version"], "bootstrap-e1")
+            self.assertTrue(memory["long_horizon"]["bootstrap"])
+            self.assertFalse(memory["long_horizon"]["canonical_version_created"])
+            base_campaign._notify_iteration.assert_not_called()
+
+    def test_first_passing_bootstrap_candidate_is_promoted_as_v0(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "campaign"
+            init_repo(repo)
+            patches = self._bootstrap_patches()
+            with patches[0], patches[1], patches[2], patches[3]:
+                base_campaign = fake_base(repo)
+                reason = LongHorizonCampaign(
+                    base_campaign=base_campaign,
+                    max_episodes=1,
+                    verifier=BootstrapVerifier(True),
+                    session_runner=CandidateRunner(5),
+                    worktree_root=root / "worktrees",
+                ).run()
+            self.assertEqual(reason, "max-episodes")
+            self.assertTrue((repo / "memory" / "v0.json").is_file())
+            self.assertFalse((repo / "memory" / "bootstrap_e0001.json").exists())
+            memory = json.loads(
+                (repo / "memory" / "v0.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(memory["version"], "v0")
+            self.assertEqual(memory["optimization"]["action_category"], "repository_bringup")
+            self.assertEqual((repo / "kernel.py").read_text(encoding="utf-8"), "VALUE = 5\n")
+            base_campaign._notify_iteration.assert_called_once()
 
     def test_verified_candidate_is_squash_promoted(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

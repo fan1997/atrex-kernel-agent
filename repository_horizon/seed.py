@@ -13,8 +13,15 @@ from long_horizon import main_adapter
 from long_horizon.git_episode import git_head
 from long_horizon.protocol import atomic_write_json
 
+from .corpus import (
+    CATALOG_NAME,
+    CORPUS_RELATIVE,
+    build_source_corpus,
+    validate_source_corpus,
+)
 from .lockfile import tree_digest, write_lock
 from .manifest import RepositoryManifest
+from .policy import install_repository_policy
 from .support_wheel import (
     canonical_distribution,
     extract_support_wheel,
@@ -124,7 +131,28 @@ def seed_workspace(
             raise RuntimeError(
                 "protected vendor_support no longer matches source.lock.json"
             )
+        locked_corpus = lock.get("source_corpus")
+        catalog_path = workspace / CATALOG_NAME
+        if locked_corpus:
+            if not catalog_path.is_file():
+                raise RuntimeError("resumed campaign is missing source_corpus.json")
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+            if catalog != locked_corpus:
+                raise RuntimeError(
+                    "protected source_corpus.json no longer matches source.lock.json"
+                )
+            if not (workspace / CORPUS_RELATIVE).is_dir():
+                raise RuntimeError("resumed campaign is missing its bounded source corpus")
+            violations = validate_source_corpus(workspace, catalog)
+            if violations:
+                raise RuntimeError(
+                    "resumed campaign source corpus failed integrity: "
+                    + "; ".join(violations)
+                )
+        elif manifest.repository_search.mode != "snapshot":
+            raise RuntimeError("resumed campaign lock has no declared source corpus")
         main_adapter.link_episode_runtime(campaign, workspace)
+        install_repository_policy(workspace, manifest)
         return
 
     resolved = _git(
@@ -189,6 +217,14 @@ def seed_workspace(
         validate_support_imports(vendor_root, manifest.runtime_support, support_root)
     manifest_bytes = manifest.path.read_bytes()
     (workspace / "source_manifest.json").write_bytes(manifest_bytes)
+    source_corpus = build_source_corpus(
+        source_checkout,
+        exact_revision,
+        manifest.repository_search,
+        workspace / CORPUS_RELATIVE,
+    )
+    if source_corpus is not None:
+        atomic_write_json(workspace / CATALOG_NAME, source_corpus)
     write_lock(
         workspace / "source.lock.json",
         source_checkout=source_checkout,
@@ -200,15 +236,19 @@ def seed_workspace(
         runtime_support_root=(workspace / "vendor_support")
         if support_records
         else None,
+        source_corpus=source_corpus,
     )
     (workspace / ".gitignore").write_text(
         "__pycache__/\n*.pyc\n/.repository_horizon_runtime/\n", encoding="utf-8"
     )
     main_adapter.link_episode_runtime(campaign, workspace)
+    install_repository_policy(workspace, manifest)
+    bringup_enabled = manifest.bringup.mode == "auto"
+    baseline_name = "r0.json" if bringup_enabled else "v0.json"
     atomic_write_json(
-        workspace / "memory" / "v0.json",
+        workspace / "memory" / baseline_name,
         {
-            "version": "v0",
+            "version": "r0" if bringup_enabled else "v0",
             "masked": False,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "source": {
@@ -222,10 +262,18 @@ def seed_workspace(
                 "measurement": "deferred_to_first_ABBA",
             },
             "correctness": {"status": "UNMEASURED"},
-            "quality_gate": {"result": "BASELINE_SEEDED"},
+            "quality_gate": {
+                "result": "SOURCE_SEEDED" if bringup_enabled else "BASELINE_SEEDED"
+            },
             "optimization": {
-                "action_category": "repository_v0_seed",
-                "action_description": "mechanical immutable source snapshot and fixed adapter",
+                "action_category": (
+                    "repository_r0_seed" if bringup_enabled else "repository_v0_seed"
+                ),
+                "action_description": (
+                    "mechanical immutable source snapshot awaiting capability probe"
+                    if bringup_enabled
+                    else "mechanical immutable source snapshot and fixed adapter"
+                ),
             },
         },
     )
@@ -240,7 +288,11 @@ def seed_workspace(
             "user.email=atrex-repository-horizon@local",
             "commit",
             "-m",
-            f"V0: seed {manifest.source_name} at {exact_revision[:12]}",
+            (
+                f"R0: seed {manifest.source_name} at {exact_revision[:12]}"
+                if bringup_enabled
+                else f"V0: seed {manifest.source_name} at {exact_revision[:12]}"
+            ),
         ],
         cwd=str(workspace),
         check=True,

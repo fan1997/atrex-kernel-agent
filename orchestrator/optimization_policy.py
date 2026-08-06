@@ -222,7 +222,8 @@ def install_workspace_policy(
     if POLICY_BEGIN in current and POLICY_END in current:
         before, remainder = current.split(POLICY_BEGIN, 1)
         _, after = remainder.split(POLICY_END, 1)
-        current = before.rstrip() + "\n\n" + generated + after.lstrip("\n")
+        prefix = before.rstrip()
+        current = (prefix + "\n\n" if prefix else "") + generated + after.lstrip("\n")
     else:
         current = current.rstrip() + ("\n\n" if current.strip() else "") + generated
     claude_path.write_text(current, encoding="utf-8")

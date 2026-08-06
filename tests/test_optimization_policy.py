@@ -44,6 +44,15 @@ class OptimizationPolicyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "workspace policy mismatch"):
                 install_workspace_policy(workspace, "leaderboard", "Triton")
 
+    def test_generated_only_workspace_policy_is_byte_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="optimization-policy-empty-") as temp_dir:
+            workspace = Path(temp_dir)
+            install_workspace_policy(workspace, "production", "CuteDSL")
+            first = (workspace / "CLAUDE.md").read_bytes()
+            install_workspace_policy(workspace, "production", "CuteDSL")
+            self.assertEqual((workspace / "CLAUDE.md").read_bytes(), first)
+            self.assertFalse(first.startswith(b"\n"))
+
     def test_workspace_policy_binds_one_agent_runtime_and_rejects_switches(self) -> None:
         with tempfile.TemporaryDirectory(prefix="runtime-policy-") as temp_dir:
             workspace = Path(temp_dir)

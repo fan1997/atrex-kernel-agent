@@ -31,6 +31,32 @@ def row(revision: str, repeat: int, latency: float) -> dict:
 
 
 class VerificationScoringTests(unittest.TestCase):
+    def test_candidate_only_scoring_does_not_require_an_incumbent(self) -> None:
+        schedule = [{"revision": "candidate", "repeat": 0}]
+        payload = {
+            "schema_version": 1,
+            "runs": [
+                {
+                    "revision": "candidate",
+                    "repeat": 0,
+                    "exit_code": 0,
+                    "result": {"all_pass": True, "latency_us_geomean": 9.0},
+                }
+            ],
+            "error": None,
+        }
+        result = score_verification_payload(
+            payload,
+            schedule=schedule,
+            repeats=1,
+            min_improvement_pct=0.0,
+            candidate_only=True,
+        )
+        self.assertTrue(result.passed)
+        self.assertAlmostEqual(result.candidate_latency_us, 9.0)
+        self.assertIsNone(result.incumbent_latency_us)
+        self.assertIsNone(result.improvement_pct)
+
     def test_abba_winner_passes(self) -> None:
         schedule = verification_schedule(2)
         payload = {

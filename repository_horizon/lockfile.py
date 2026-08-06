@@ -30,6 +30,7 @@ def write_lock(
     atrex_bench_root: str,
     runtime_support: list[dict[str, object]] | None = None,
     runtime_support_root: Path | None = None,
+    source_corpus: dict[str, object] | None = None,
 ) -> dict:
     digest, count = tree_digest(source_root)
     support_digest, support_count = (
@@ -48,6 +49,7 @@ def write_lock(
         "runtime_support": runtime_support or [],
         "runtime_support_tree_sha256": support_digest,
         "runtime_support_file_count": support_count,
+        "source_corpus": source_corpus,
     }
     atomic_write_json(destination, payload)
     return payload

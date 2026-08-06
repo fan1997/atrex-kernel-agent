@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "name": "fa4_fp8_paged_sm100",
-  "adapter": "fa4_fp8_paged_adapter.py",
+  "adapter": "fa4_fp8_paged_native_adapter.py",
   "source": {
     "name": "flash_attention",
-    "revision": "c68c592fd9da1e40a4fb0b56229caae6754ac5c9",
+    "revision": "b54df166ebb69b896892826014759d09b9c3c9c6",
     "archive_paths": [
       "flash_attn/cute"
     ],
@@ -13,6 +13,17 @@
   "editable_roots": [
     "flash_attn/cute"
   ],
+  "repository_search": {
+    "mode": "replay_strict",
+    "excluded_commits": [
+      "3e18806fdc32b6731c6f7dc168e062ae7d0497c7"
+    ],
+    "require_report": true
+  },
+  "bringup": {
+    "mode": "auto",
+    "probe_repeats": 1
+  },
   "runtime_requirements": [
     {
       "distribution": "nvidia-cutlass-dsl",
@@ -58,6 +69,6 @@
     "timed_runs": 100,
     "repeats": 2,
     "per_run_timeout": 142,
-    "min_improvement_pct": 0.0
+    "min_improvement_pct": 1.0
   }
 }

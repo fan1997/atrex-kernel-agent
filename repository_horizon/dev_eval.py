@@ -40,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
     paths = changed_paths(workspace, base_commit, candidate_commit)
     manifest = load_manifest(workspace / "source_manifest.json")
     lock = json.loads((workspace / "source.lock.json").read_text(encoding="utf-8"))
+    bringup = not (workspace / "memory" / "v0.json").is_file()
+    repeats = manifest.bringup.probe_repeats if bringup else 1
+    schedule_runs = repeats if bringup else repeats * 2
+    per_run_timeout = max(1, (600 - 30) // schedule_runs)
     verifier = RepositoryABBAValidator(
         manifest=manifest,
         atrex_bench_root=Path(lock["atrex_bench_root"]),
@@ -47,8 +51,10 @@ def main(argv: list[str] | None = None) -> int:
         profile=args.profile,
         url=args.url,
         timeout=600,
-        repeats=1,
-        min_improvement_pct=-100.0,
+        repeats=repeats,
+        per_run_timeout=per_run_timeout,
+        min_improvement_pct=-100.0 if bringup else manifest.measurement.min_improvement_pct,
+        candidate_only=bringup,
     )
     result = verifier.verify(
         workspace,
