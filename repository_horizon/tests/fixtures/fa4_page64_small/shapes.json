@@ -1,0 +1,15 @@
+{
+  "0": {
+    "init_kwargs": null,
+    "input_kwargs": {
+      "q": [64, 16, 256],
+      "query_start_loc": "0,64",
+      "seq_lens": "128",
+      "num_kv_heads": 1,
+      "page_size": 64,
+      "kv_layout": "NHD",
+      "role": "repository-horizon-smoke",
+      "stage": 0
+    }
+  }
+}

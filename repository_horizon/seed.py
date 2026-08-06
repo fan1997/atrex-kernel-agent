@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import shutil
+import subprocess
+import tarfile
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+
+from long_horizon import main_adapter
+from long_horizon.git_episode import git_head
+from long_horizon.protocol import atomic_write_json
+
+from .lockfile import write_lock
+from .manifest import RepositoryManifest
+
+OP_FILES = (
+    "reference.py",
+    "input.py",
+    "shapes.json",
+    "metadata.json",
+    "roofline.json",
+    "valid.py",
+)
+
+
+def _git(source: Path, *args: str, binary: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(source),
+        check=True,
+        capture_output=True,
+        text=not binary,
+    )
+
+
+def _extract_archive(data: bytes, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        for member in archive.getmembers():
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"unsafe git archive member: {member.name}")
+        archive.extractall(destination, filter="data")
+
+
+def seed_workspace(
+    campaign,
+    manifest: RepositoryManifest,
+    source_checkout: Path,
+) -> None:
+    workspace = campaign.workspace
+    if workspace.exists():
+        if not git_head(workspace):
+            raise RuntimeError(
+                f"existing repository campaign has no Git HEAD: {workspace}"
+            )
+        lock_path = workspace / "source.lock.json"
+        if not lock_path.is_file():
+            raise RuntimeError("existing repository campaign has no source.lock.json")
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        if lock.get("source_revision") != manifest.revision:
+            raise RuntimeError(
+                "source manifest revision differs from resumed campaign lock"
+            )
+        workspace_manifest = workspace / "source_manifest.json"
+        expected_manifest_hash = str(lock.get("manifest_sha256", ""))
+        actual_workspace_hash = hashlib.sha256(
+            workspace_manifest.read_bytes()
+        ).hexdigest()
+        requested_manifest_hash = hashlib.sha256(manifest.path.read_bytes()).hexdigest()
+        if (
+            not expected_manifest_hash
+            or actual_workspace_hash != expected_manifest_hash
+        ):
+            raise RuntimeError(
+                "protected source_manifest.json no longer matches source.lock.json"
+            )
+        if requested_manifest_hash != expected_manifest_hash:
+            raise RuntimeError(
+                "requested source manifest differs from resumed campaign lock"
+            )
+        main_adapter.link_episode_runtime(campaign, workspace)
+        return
+
+    resolved = _git(
+        source_checkout, "rev-parse", "--verify", f"{manifest.revision}^{{commit}}"
+    )
+    exact_revision = resolved.stdout.strip()
+    if exact_revision != manifest.revision:
+        raise RuntimeError(
+            "source.revision must be a full immutable commit id "
+            f"(manifest={manifest.revision}, resolved={exact_revision})"
+        )
+    workspace.mkdir(parents=True)
+    shutil.copy2(manifest.adapter, workspace / "kernel.py")
+    op_dir = Path(campaign.kernel_demo).resolve().parent
+    for name in OP_FILES:
+        source = op_dir / name
+        if source.is_file():
+            shutil.copy2(source, workspace / name)
+    harness = (
+        Path(__file__).resolve().parent.parent
+        / "reference"
+        / "atrex_bench_test_kernel.py"
+    )
+    if campaign.atrex_bench_root:
+        shutil.copy2(harness, workspace / "test_kernel.py")
+    else:
+        raise RuntimeError(
+            "repository horizon v1 requires an Atrex-Bench native operator"
+        )
+
+    archive = _git(
+        source_checkout,
+        "archive",
+        "--format=tar",
+        exact_revision,
+        "--",
+        *manifest.archive_paths,
+        binary=True,
+    ).stdout
+    vendor_root = workspace / manifest.vendor_root
+    _extract_archive(archive, vendor_root)
+    manifest_bytes = manifest.path.read_bytes()
+    (workspace / "source_manifest.json").write_bytes(manifest_bytes)
+    write_lock(
+        workspace / "source.lock.json",
+        source_checkout=source_checkout,
+        source_revision=exact_revision,
+        source_root=vendor_root,
+        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        atrex_bench_root=campaign.atrex_bench_root,
+    )
+    (workspace / ".gitignore").write_text(
+        "__pycache__/\n*.pyc\n/.repository_horizon_runtime/\n", encoding="utf-8"
+    )
+    main_adapter.link_episode_runtime(campaign, workspace)
+    atomic_write_json(
+        workspace / "memory" / "v0.json",
+        {
+            "version": "v0",
+            "masked": False,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": {
+                "name": manifest.source_name,
+                "revision": exact_revision,
+                "manifest": "source_manifest.json",
+                "lock": "source.lock.json",
+            },
+            "performance": {
+                "latency_us": None,
+                "measurement": "deferred_to_first_ABBA",
+            },
+            "correctness": {"status": "UNMEASURED"},
+            "quality_gate": {"result": "BASELINE_SEEDED"},
+            "optimization": {
+                "action_category": "repository_v0_seed",
+                "action_description": "mechanical immutable source snapshot and fixed adapter",
+            },
+        },
+    )
+    subprocess.run(["git", "init"], cwd=str(workspace), check=True, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=str(workspace), check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=atrex-repository-horizon",
+            "-c",
+            "user.email=atrex-repository-horizon@local",
+            "commit",
+            "-m",
+            f"V0: seed {manifest.source_name} at {exact_revision[:12]}",
+        ],
+        cwd=str(workspace),
+        check=True,
+        capture_output=True,
+    )

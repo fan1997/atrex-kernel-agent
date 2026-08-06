@@ -6,13 +6,18 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from orchestrator import optimize as base
 
 from .campaign import LongHorizonCampaign
+from .integration import LongHorizonIntegration
 from .session import LongSessionRunner
 from .verifier import GatewayABBAValidator
+
+IntegrationFactory = Callable[
+    [base.Campaign, "LongHorizonOptions"], LongHorizonIntegration
+]
 
 
 @dataclass(frozen=True)
@@ -24,10 +29,14 @@ class LongHorizonOptions:
 
     def child_args(self) -> list[str]:
         return [
-            "--handoff-resumes", str(self.handoff_resumes),
-            "--verify-repeats", str(self.verify_repeats),
-            "--verify-run-timeout", str(self.verify_run_timeout),
-            "--min-improvement-pct", str(self.min_improvement_pct),
+            "--handoff-resumes",
+            str(self.handoff_resumes),
+            "--verify-repeats",
+            str(self.verify_repeats),
+            "--verify-run-timeout",
+            str(self.verify_run_timeout),
+            "--min-improvement-pct",
+            str(self.min_improvement_pct),
         ]
 
 
@@ -75,7 +84,9 @@ def _extract_options(argv: list[str]) -> tuple[LongHorizonOptions, list[str]]:
     return LongHorizonOptions(**vars(values)), remaining
 
 
-def _verifier(campaign: base.Campaign, options: LongHorizonOptions) -> GatewayABBAValidator:
+def _verifier(
+    campaign: base.Campaign, options: LongHorizonOptions
+) -> GatewayABBAValidator:
     return GatewayABBAValidator(
         hardware=campaign.sandbox_hardware,
         profile=campaign.sandbox_profile,
@@ -87,7 +98,14 @@ def _verifier(campaign: base.Campaign, options: LongHorizonOptions) -> GatewayAB
     )
 
 
-def _run_campaign(campaign: base.Campaign, options: LongHorizonOptions) -> str:
+def _run_campaign(
+    campaign: base.Campaign,
+    options: LongHorizonOptions,
+    integration_factory: IntegrationFactory | None = None,
+) -> str:
+    integration = (
+        integration_factory(campaign, options) if integration_factory else None
+    )
     long_campaign = LongHorizonCampaign(
         base_campaign=campaign,
         max_version=campaign.max_iters,
@@ -97,8 +115,11 @@ def _run_campaign(campaign: base.Campaign, options: LongHorizonOptions) -> str:
         max_stall=campaign.max_stall,
         verifier=_verifier(campaign, options),
         session_runner=LongSessionRunner(agent_cli=campaign.agent_cli),
+        integration=integration,
     )
     reason = long_campaign.run()
+    if integration is not None and integration.finish_campaign(campaign, reason):
+        return reason
     return campaign._finish(reason)
 
 
@@ -187,18 +208,28 @@ def _run_layer_schedule(
 
 
 @contextmanager
-def _install_main_integration(options: LongHorizonOptions) -> Iterator[None]:
+def _install_main_integration(
+    options: LongHorizonOptions,
+    integration_factory: IntegrationFactory | None = None,
+) -> Iterator[None]:
     original_campaign_run = base.Campaign.run
     original_layer_schedule = base.LayerCampaign.schedule
     original_dispatch = base.dispatch_framework_campaigns
 
     def campaign_run(campaign: base.Campaign) -> str:
-        return _run_campaign(campaign, options)
+        return _run_campaign(campaign, options, integration_factory)
 
     def layer_schedule(layer: base.LayerCampaign, boundaries: list[dict]) -> str | None:
         return _run_layer_schedule(layer, boundaries, options)
 
-    def dispatch(argv, frameworks, workspace_base, arch, platform, optimization_mode="leaderboard"):
+    def dispatch(
+        argv,
+        frameworks,
+        workspace_base,
+        arch,
+        platform,
+        optimization_mode="leaderboard",
+    ):
         # Main's dispatcher is retained in full. Point only its child entry path at
         # this wrapper and forward the long-horizon-only flags it does not parse.
         original_file = base.__file__
@@ -227,7 +258,9 @@ def _install_main_integration(options: LongHorizonOptions) -> Iterator[None]:
 
 
 def _print_long_help() -> None:
-    print("\nLong-horizon additions (all other options are inherited from optimize.py):")
+    print(
+        "\nLong-horizon additions (all other options are inherited from optimize.py):"
+    )
     build_long_horizon_parser().print_help()
     print(
         "\nLong-horizon semantics: --max-iters caps canonical memory versions, "
@@ -236,12 +269,16 @@ def _print_long_help() -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    integration_factory: IntegrationFactory | None = None,
+) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     options, main_argv = _extract_options(raw_argv)
     wants_help = "-h" in main_argv or "--help" in main_argv
     try:
-        with _install_main_integration(options):
+        with _install_main_integration(options, integration_factory):
             return base.main(main_argv)
     except SystemExit as exc:
         if wants_help and exc.code == 0:

@@ -1,0 +1,17 @@
+{
+  "category": "ATTENTION",
+  "provider": "repository-horizon-test",
+  "id": "fa4_page64_small",
+  "num_shapes": 1,
+  "status": "smoke_test",
+  "shapes": {
+    "0": {
+      "description": "Small FP8 paged causal attention transport smoke test",
+      "production_performance": {
+        "framework": "fa4",
+        "performance_us": 1.0,
+        "timer": "triton.testing.do_bench_cuda_event"
+      }
+    }
+  }
+}

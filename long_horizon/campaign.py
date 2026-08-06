@@ -17,19 +17,18 @@ from .git_episode import (
     record_episode_outcome,
     working_changes,
 )
+from .integration import DefaultLongHorizonIntegration, LongHorizonIntegration
 from .journal import initialize as initialize_journal
 from .journal import load as load_journal
 from .journal import validate_terminal
 from .models import EpisodeHandoff, SupervisorState, VerificationResult
 from .session import LongSessionRunner
-from .store import CampaignStore, RUNTIME_DIR, VERIFY_DIR
+from .store import RUNTIME_DIR, VERIFY_DIR, CampaignStore
 from .telemetry import summarize_episode
 from .verifier import GatewayABBAValidator
 
-
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "episode.md"
 MODULE_ROOT = Path(__file__).resolve().parent.parent
-EVIDENCE_PREFIXES = ("plans/", "profiles/")
 
 
 def _render(template: str, values: dict[str, object]) -> str:
@@ -45,7 +44,9 @@ def _iso_timestamp(value: str) -> float:
 def _conversion_parity_passes(verification: VerificationResult) -> bool:
     candidate = verification.candidate_latency_us
     incumbent = verification.incumbent_latency_us
-    if not isinstance(candidate, (int, float)) or not isinstance(incumbent, (int, float)):
+    if not isinstance(candidate, (int, float)) or not isinstance(
+        incumbent, (int, float)
+    ):
         return False
     if candidate > incumbent * (1.0 + main_adapter.CONVERT_PERF_TOL):
         return False
@@ -70,6 +71,16 @@ class LongHorizonCampaign:
     verifier: GatewayABBAValidator | None = None
     session_runner: LongSessionRunner | None = None
     worktree_root: Path | None = None
+    integration: LongHorizonIntegration | None = None
+
+    def __post_init__(self) -> None:
+        if self.integration is None:
+            self.integration = DefaultLongHorizonIntegration()
+
+    @property
+    def candidate_contract(self):
+        assert self.integration is not None
+        return self.integration.candidate_contract()
 
     @property
     def workspace(self) -> Path:
@@ -82,8 +93,15 @@ class LongHorizonCampaign:
                 {
                     key: attempt.get(key)
                     for key in (
-                        "episode", "status", "accepted", "summary", "next_directions",
-                        "candidate_commit", "promotion_commit", "verification", "violation",
+                        "episode",
+                        "status",
+                        "accepted",
+                        "summary",
+                        "next_directions",
+                        "candidate_commit",
+                        "promotion_commit",
+                        "verification",
+                        "violation",
                     )
                     if attempt.get(key) is not None
                 }
@@ -103,38 +121,44 @@ class LongHorizonCampaign:
     ) -> str:
         directives = main_adapter.episode_directives(self.base_campaign)
         journal_command = f"PYTHONPATH={MODULE_ROOT} python -m long_horizon.journal"
+        fields: dict[str, object] = {
+            "EPISODE": episode,
+            "VERSION": version,
+            "WORKSPACE": worktree.path,
+            "PLATFORM": self.base_campaign.platform,
+            "FRAMEWORK": self.base_campaign.framework,
+            "BASE_COMMIT": worktree.base_commit,
+            "EPISODE_BRANCH": worktree.branch,
+            "JOURNAL_PATH": journal_path,
+            "JOURNAL_PATH_SHELL": json.dumps(str(journal_path)),
+            "HANDOFF_PATH": handoff_path,
+            "NOTES": self.base_campaign.notes,
+            "MODE_POLICY": directives["mode_policy"],
+            "EVALUATOR": directives["evaluator"],
+            "HARDWARE": directives["hardware"],
+            "SANDBOX": directives["sandbox"],
+            "HISTORY": self._history(state),
+            "JOURNAL_COMMAND": journal_command,
+            "MAIN_ITERATION_PLAYBOOK": main_adapter.iteration_playbook(
+                self.base_campaign, worktree.path, version
+            ),
+            "CONVERSION_DIRECTIVE": (
+                "This episode is a mandatory Triton-to-Gluon conversion attempt. Do not "
+                "submit another Triton kernel. A candidate must be a committed Gluon kernel, "
+                f"pass correctness, and stay within {main_adapter.CONVERT_PERF_TOL:.0%} of "
+                "the incumbent latency."
+                if conversion_pending
+                else "No mandatory framework conversion is currently latched."
+            ),
+            "INTEGRATION_PLAYBOOK": "",
+        }
+        assert self.integration is not None
+        fields.update(
+            self.integration.prompt_fields(self.base_campaign, worktree.path, version)
+        )
         return _render(
             PROMPT_PATH.read_text(encoding="utf-8"),
-            {
-                "EPISODE": episode,
-                "VERSION": version,
-                "WORKSPACE": worktree.path,
-                "PLATFORM": self.base_campaign.platform,
-                "FRAMEWORK": self.base_campaign.framework,
-                "BASE_COMMIT": worktree.base_commit,
-                "EPISODE_BRANCH": worktree.branch,
-                "JOURNAL_PATH": journal_path,
-                "JOURNAL_PATH_SHELL": json.dumps(str(journal_path)),
-                "HANDOFF_PATH": handoff_path,
-                "NOTES": self.base_campaign.notes,
-                "MODE_POLICY": directives["mode_policy"],
-                "EVALUATOR": directives["evaluator"],
-                "HARDWARE": directives["hardware"],
-                "SANDBOX": directives["sandbox"],
-                "HISTORY": self._history(state),
-                "JOURNAL_COMMAND": journal_command,
-                "MAIN_ITERATION_PLAYBOOK": main_adapter.iteration_playbook(
-                    self.base_campaign, worktree.path, version
-                ),
-                "CONVERSION_DIRECTIVE": (
-                    "This episode is a mandatory Triton-to-Gluon conversion attempt. Do not "
-                    "submit another Triton kernel. A candidate must be a committed Gluon kernel, "
-                    f"pass correctness, and stay within {main_adapter.CONVERT_PERF_TOL:.0%} of "
-                    "the incumbent latency."
-                    if conversion_pending
-                    else "No mandatory framework conversion is currently latched."
-                ),
-            },
+            fields,
         )
 
     def _completion_check(
@@ -143,7 +167,9 @@ class LongHorizonCampaign:
         journal_path: Path,
         handoff: EpisodeHandoff,
     ) -> str:
-        candidate = handoff.candidate_commit if handoff.status == "candidate_ready" else ""
+        candidate = (
+            handoff.candidate_commit if handoff.status == "candidate_ready" else ""
+        )
         diagnosis = validate_terminal(
             journal_path,
             expected_episode=worktree.episode,
@@ -156,20 +182,26 @@ class LongHorizonCampaign:
             return diagnosis
         if handoff.status != "candidate_ready":
             return ""
-        violation, _ = worktree.validate_candidate(candidate)
+        violation, _ = worktree.validate_candidate(candidate, self.candidate_contract)
         if violation:
             return violation
         try:
             journal = load_journal(journal_path)
             finalized_at = _iso_timestamp(str(journal["finalized_at"]))
-            committed_at = float(git_text(worktree.path, "show", "-s", "--format=%ct", candidate))
+            committed_at = float(
+                git_text(worktree.path, "show", "-s", "--format=%ct", candidate)
+            )
         except (KeyError, ValueError, OSError, json.JSONDecodeError) as exc:
             return f"cannot validate terminal journal ordering: {exc}"
         if finalized_at <= committed_at:
-            return "candidate journal must be finalized after the exact candidate commit"
+            return (
+                "candidate journal must be finalized after the exact candidate commit"
+            )
         return ""
 
-    def _copy_runtime_artifacts(self, worktree: EpisodeWorktree, episode_dir: Path) -> None:
+    def _copy_runtime_artifacts(
+        self, worktree: EpisodeWorktree, episode_dir: Path
+    ) -> None:
         source = worktree.path / RUNTIME_DIR
         if source.is_dir():
             destination = episode_dir / "episode_runtime"
@@ -192,13 +224,20 @@ class LongHorizonCampaign:
         verification: VerificationResult,
     ) -> dict[str, Any]:
         candidate_runs = [
-            run for run in verification.runs
+            run
+            for run in verification.runs
             if run.revision == "candidate" and isinstance(run.result, dict)
         ]
         representative = candidate_runs[-1].result if candidate_runs else {}
-        by_shape = representative.get("latency_us_by_shape", {}) if representative else {}
-        outcome = journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
-        directions = outcome.get("next_directions", []) if isinstance(outcome, dict) else []
+        by_shape = (
+            representative.get("latency_us_by_shape", {}) if representative else {}
+        )
+        outcome = (
+            journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
+        )
+        directions = (
+            outcome.get("next_directions", []) if isinstance(outcome, dict) else []
+        )
         return {
             "version": f"v{version}",
             "masked": False,
@@ -223,7 +262,9 @@ class LongHorizonCampaign:
             },
             "optimization": {
                 "action_category": "long_horizon_episode",
-                "action_description": str(outcome.get("summary", "verified long-horizon candidate")),
+                "action_description": str(
+                    outcome.get("summary", "verified long-horizon candidate")
+                ),
                 "expected_impact": "independently verified incumbent/candidate latency reduction",
                 "risks_and_rollback": "candidate retained on isolated episode branch",
             },
@@ -240,8 +281,12 @@ class LongHorizonCampaign:
             },
             "quality_gate": {"result": "PASS", "failure_reason": None},
             "open_directions": [
-                {"direction": value, "rationale": "carried from terminal episode journal"}
-                for value in directions if isinstance(value, str)
+                {
+                    "direction": value,
+                    "rationale": "carried from terminal episode journal",
+                }
+                for value in directions
+                if isinstance(value, str)
             ],
             "git_commit_hash": candidate_commit,
         }
@@ -255,8 +300,12 @@ class LongHorizonCampaign:
         journal: dict[str, Any],
         candidate_commit: str,
     ) -> dict[str, Any]:
-        outcome = journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
-        directions = outcome.get("next_directions", []) if isinstance(outcome, dict) else []
+        outcome = (
+            journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
+        )
+        directions = (
+            outcome.get("next_directions", []) if isinstance(outcome, dict) else []
+        )
         failure = violation or str(outcome.get("summary", status))
         return {
             "version": f"v{version}",
@@ -282,7 +331,10 @@ class LongHorizonCampaign:
             "correctness": {"status": "FAIL" if violation else "UNKNOWN"},
             "quality_gate": {"result": "FAIL", "failure_reason": failure},
             "open_directions": [
-                {"direction": value, "rationale": "carried from terminal episode journal"}
+                {
+                    "direction": value,
+                    "rationale": "carried from terminal episode journal",
+                }
                 for value in directions
                 if isinstance(value, str)
             ],
@@ -417,7 +469,9 @@ class LongHorizonCampaign:
             )
         return padded
 
-    def _recover_interrupted(self, store: CampaignStore, state: SupervisorState) -> None:
+    def _recover_interrupted(
+        self, store: CampaignStore, state: SupervisorState
+    ) -> None:
         active = store.load_active()
         if active is None:
             return
@@ -434,20 +488,24 @@ class LongHorizonCampaign:
         memory_version = int(active.get("memory_version", 0) or 0)
         terminal_status = str(active.get("terminal_status", ""))
         already_recorded = any(
-            attempt.get("episode") == episode and attempt.get("episode_branch") == branch
+            attempt.get("episode") == episode
+            and attempt.get("episode_branch") == branch
             for attempt in state.attempts
         )
         if git_head(self.workspace) != base_commit:
             message = git_text(self.workspace, "log", "-1", "--format=%s", check=False)
             parent = git_text(self.workspace, "rev-parse", "HEAD^", check=False)
             evidence = git_text(
-                self.workspace, "show", f"HEAD:memory/long_horizon_e{episode:04d}.json",
+                self.workspace,
+                "show",
+                f"HEAD:memory/long_horizon_e{episode:04d}.json",
                 check=False,
             )
             promoted = (
                 phase in {"promoting", "promoted"}
                 and parent == base_commit
-                and message == f"episode {episode}: promote verified long-horizon candidate"
+                and message
+                == f"episode {episode}: promote verified long-horizon candidate"
                 and bool(evidence)
             )
             outcome_recorded = (
@@ -467,7 +525,9 @@ class LongHorizonCampaign:
                 )
             )
             if not (promoted or outcome_recorded):
-                raise RuntimeError("incumbent advanced during an interrupted episode without proof")
+                raise RuntimeError(
+                    "incumbent advanced during an interrupted episode without proof"
+                )
             if not already_recorded:
                 state.episodes = max(state.episodes, episode)
                 if promoted:
@@ -498,8 +558,8 @@ class LongHorizonCampaign:
                             "blocked_terminal": retry_of is not None,
                         }
                         if retry_of is not None:
-                            recovered_attempt["blocked_retry_of_episode"] = retry_of.get(
-                                "episode"
+                            recovered_attempt["blocked_retry_of_episode"] = (
+                                retry_of.get("episode")
                             )
                         state.attempts.append(recovered_attempt)
                         store.archive_attempt(episode, recovered_attempt)
@@ -514,12 +574,16 @@ class LongHorizonCampaign:
             if working_changes(self.workspace):
                 subprocess.run(
                     ["git", "reset", "--hard", base_commit],
-                    cwd=str(self.workspace), check=True,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    cwd=str(self.workspace),
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
             registered = {
                 Path(line.split(" ", 1)[1]).resolve()
-                for line in git_text(self.workspace, "worktree", "list", "--porcelain").splitlines()
+                for line in git_text(
+                    self.workspace, "worktree", "list", "--porcelain"
+                ).splitlines()
                 if line.startswith("worktree ")
             }
             if (
@@ -554,11 +618,14 @@ class LongHorizonCampaign:
         store.clear_active()
 
     def run(self) -> str:
-        main_adapter.prepare_campaign(self.base_campaign)
+        assert self.integration is not None
+        self.integration.prepare_campaign(self.base_campaign)
         store = CampaignStore(self.workspace)
         state = store.load_state()
         if state.episodes == 0 and state.consecutive_without_promotion == 0:
-            state.consecutive_without_promotion = main_adapter.restored_stall(self.workspace)
+            state.consecutive_without_promotion = main_adapter.restored_stall(
+                self.workspace
+            )
         self._recover_interrupted(store, state)
         if working_changes(self.workspace):
             raise RuntimeError(
@@ -577,11 +644,14 @@ class LongHorizonCampaign:
                 flush=True,
             )
             return reason
-        verifier = self.verifier or GatewayABBAValidator(
+        default_verifier = self.verifier or GatewayABBAValidator(
             hardware=self.base_campaign.sandbox_hardware,
             profile=self.base_campaign.sandbox_profile,
             url=self.base_campaign.sandbox_url,
             timeout=self.base_campaign.sandbox_timeout,
+        )
+        verifier = self.integration.make_verifier(
+            self.base_campaign, None, default_verifier
         )
         runner = self.session_runner or LongSessionRunner(
             agent_cli=getattr(self.base_campaign, "agent_cli", "claude")
@@ -651,17 +721,21 @@ class LongHorizonCampaign:
                 }
             )
             store.save_active(active)
-            main_adapter.link_episode_runtime(self.base_campaign, worktree.path)
+            self.integration.link_episode_runtime(self.base_campaign, worktree.path)
             unexpected = working_changes(worktree.path)
             if unexpected:
                 raise RuntimeError(
-                    "runtime linking dirtied the episode boundary: " + ", ".join(unexpected)
+                    "runtime linking dirtied the episode boundary: "
+                    + ", ".join(unexpected)
                 )
             runtime = worktree.path / RUNTIME_DIR
             journal_path = runtime / "journal.json"
             handoff_path = runtime / "handoff.json"
             initialize_journal(
-                journal_path, episode=episode, base_commit=base_commit, branch=worktree.branch
+                journal_path,
+                episode=episode,
+                base_commit=base_commit,
+                branch=worktree.branch,
             )
             prompt = self._prompt(
                 episode=episode,
@@ -704,22 +778,30 @@ class LongHorizonCampaign:
             if result.exit_status != 0 or result.timed_out:
                 violation = f"session failed: exit={result.exit_status} timeout={result.timed_out}"
             elif handoff is None:
-                violation = result.completion_diagnosis or "session produced no valid terminal handoff"
+                violation = (
+                    result.completion_diagnosis
+                    or "session produced no valid terminal handoff"
+                )
             elif status == "candidate_ready":
-                violation, paths = worktree.validate_candidate(candidate_commit)
+                violation, paths = worktree.validate_candidate(
+                    candidate_commit, self.candidate_contract
+                )
                 if (
                     not violation
                     and conversion_pending
                     and not main_adapter.candidate_is_gluon(worktree.path)
                 ):
-                    violation = "mandatory conversion candidate is not a committed Gluon kernel"
+                    violation = (
+                        "mandatory conversion candidate is not a committed Gluon kernel"
+                    )
                 if not violation:
-                    policy_violations = main_adapter.candidate_policy_violations(
+                    policy_violations = self.candidate_contract.workspace_violations(
                         self.base_campaign, worktree.path
                     )
                     if policy_violations:
-                        violation = "production policy rejected candidate: " + "; ".join(
-                            policy_violations
+                        violation = (
+                            "production policy rejected candidate: "
+                            + "; ".join(policy_violations)
                         )
                 if not violation:
                     active["phase"] = "verifying"
@@ -728,11 +810,7 @@ class LongHorizonCampaign:
                         worktree.path,
                         base_commit=base_commit,
                         candidate_commit=candidate_commit,
-                        changed_paths=[
-                            path
-                            for path in paths
-                            if not path.startswith(EVIDENCE_PREFIXES)
-                        ],
+                        changed_paths=self.candidate_contract.verification_paths(paths),
                     )
                     if (
                         conversion_pending
@@ -756,7 +834,11 @@ class LongHorizonCampaign:
                 journal = load_journal(journal_path)
             except Exception:
                 journal = {}
-            outcome = journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
+            outcome = (
+                journal.get("outcome")
+                if isinstance(journal.get("outcome"), dict)
+                else {}
+            )
             attempt = {
                 "episode": episode,
                 "version": memory_version,
@@ -771,8 +853,12 @@ class LongHorizonCampaign:
                 "session_id": result.session_id,
                 "resume_count": result.resume_count,
                 "tokens": result.tokens,
-                "summary": outcome.get("summary") if isinstance(outcome, dict) else None,
-                "next_directions": outcome.get("next_directions") if isinstance(outcome, dict) else None,
+                "summary": outcome.get("summary")
+                if isinstance(outcome, dict)
+                else None,
+                "next_directions": outcome.get("next_directions")
+                if isinstance(outcome, dict)
+                else None,
                 "verification": verification.as_dict() if verification else None,
             }
             try:
@@ -805,7 +891,9 @@ class LongHorizonCampaign:
                 )
             valid_blocked = status == "blocked" and not violation
             if valid_blocked:
-                retry_of = state.attempts[-1] if self._blocked_retry_pending(state) else None
+                retry_of = (
+                    state.attempts[-1] if self._blocked_retry_pending(state) else None
+                )
                 if retry_of is None:
                     attempt["blocked_retry_scheduled"] = True
                     attempt["blocked_terminal"] = False
@@ -826,6 +914,9 @@ class LongHorizonCampaign:
                     journal=journal,
                     verification=verification,
                 )
+                memory.update(
+                    self.integration.memory_metadata(self.base_campaign, verification)
+                )
                 promotion_commit = promote_candidate(
                     self.workspace,
                     base_commit=base_commit,
@@ -834,6 +925,7 @@ class LongHorizonCampaign:
                     evidence=evidence,
                     memory_version=memory_version,
                     memory_record=memory,
+                    contract=self.candidate_contract,
                 )
                 attempt["promotion_commit"] = promotion_commit
                 state.accepted += 1

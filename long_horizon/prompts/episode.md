@@ -38,6 +38,8 @@ including `test_kernel.py`, `definition.json`, `reference.py`, `workload.jsonl`,
 
 {{CONVERSION_DIRECTIVE}}
 
+{{INTEGRATION_PLAYBOOK}}
+
 ## Prior episode evidence
 
 ```json
@@ -105,11 +107,12 @@ Only after finalizing, atomically publish the small control handoff by writing c
 Chat text is not a handoff. A missing or invalid file causes the supervisor to resume this same
 session. Do not claim a speedup merely to terminate; a well-supported pivot is a valid outcome.
 
-## Inherited current-main optimization playbook
+## Integration-selected current-main-compatible optimization playbook
 
-The playbook below is rendered directly from the latest `orchestrator/prompts/iteration.md`; follow
-its profiling, research, implementation, sandbox, correctness, multi-seed, benchmark, and evidence
-requirements. This long-horizon overlay changes only four iteration mechanics:
+For the default single-file campaign, the playbook below is rendered directly from the latest
+`orchestrator/prompts/iteration.md`. A source-assisted integration may replace its file-edit and
+transport details while retaining its evidence, correctness, benchmark, and safety requirements.
+This long-horizon overlay changes only four iteration mechanics:
 
 1. repeat its engineering cycle as many times as useful instead of stopping after one cycle;
 2. write the structured episode journal instead of canonical `memory/v{{VERSION}}.json`;

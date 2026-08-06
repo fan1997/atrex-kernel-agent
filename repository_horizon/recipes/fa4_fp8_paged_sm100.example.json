@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "name": "fa4_fp8_paged_sm100",
+  "adapter": "fa4_fp8_paged_adapter.py",
+  "source": {
+    "name": "flash_attention",
+    "revision": "c68c592fd9da1e40a4fb0b56229caae6754ac5c9",
+    "archive_paths": [
+      "flash_attn/cute"
+    ],
+    "package_root": "."
+  },
+  "editable_roots": [
+    "flash_attn/cute"
+  ],
+  "runtime_requirements": [
+    {
+      "distribution": "nvidia-cutlass-dsl",
+      "import": "cutlass.cute",
+      "version": "==4.6.1"
+    },
+    {
+      "distribution": "quack-kernels",
+      "import": "quack",
+      "version": "==0.5.3"
+    },
+    {
+      "distribution": "torch",
+      "import": "torch",
+      "version": ">=2.9.0"
+    }
+  ],
+  "measurement": {
+    "warmup": 10,
+    "timed_runs": 100,
+    "repeats": 2,
+    "per_run_timeout": 120,
+    "min_improvement_pct": 0.0
+  }
+}
