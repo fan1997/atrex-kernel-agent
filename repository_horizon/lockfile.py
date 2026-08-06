@@ -28,8 +28,15 @@ def write_lock(
     source_root: Path,
     manifest_sha256: str,
     atrex_bench_root: str,
+    runtime_support: list[dict[str, object]] | None = None,
+    runtime_support_root: Path | None = None,
 ) -> dict:
     digest, count = tree_digest(source_root)
+    support_digest, support_count = (
+        tree_digest(runtime_support_root)
+        if runtime_support_root is not None and runtime_support_root.is_dir()
+        else (None, 0)
+    )
     payload = {
         "schema_version": 1,
         "source_checkout": str(source_checkout),
@@ -38,6 +45,9 @@ def write_lock(
         "source_file_count": count,
         "manifest_sha256": manifest_sha256,
         "atrex_bench_root": atrex_bench_root,
+        "runtime_support": runtime_support or [],
+        "runtime_support_tree_sha256": support_digest,
+        "runtime_support_file_count": support_count,
     }
     atomic_write_json(destination, payload)
     return payload

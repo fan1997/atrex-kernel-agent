@@ -30,11 +30,34 @@
       "version": ">=2.9.0"
     }
   ],
+  "runtime_support": [
+    {
+      "distribution": "quack-kernels",
+      "version": "0.5.3",
+      "package": "quack",
+      "members": [
+        "quack/activation.py",
+        "quack/compile_utils.py",
+        "quack/copy_utils.py",
+        "quack/cute_dsl_utils.py",
+        "quack/layout_utils.py",
+        "quack/rounding.py",
+        "quack/sm90_utils.py",
+        "quack/utils.py"
+      ],
+      "dist_info_members": [
+        "METADATA",
+        "WHEEL",
+        "top_level.txt"
+      ],
+      "generate_minimal_init": true
+    }
+  ],
   "measurement": {
     "warmup": 10,
     "timed_runs": 100,
     "repeats": 2,
-    "per_run_timeout": 120,
+    "per_run_timeout": 142,
     "min_improvement_pct": 0.0
   }
 }

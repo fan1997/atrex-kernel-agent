@@ -23,9 +23,11 @@ class RepositoryIntegration:
         self,
         manifest: RepositoryManifest,
         source_checkout: Path,
+        support_wheels: dict[str, Path] | None = None,
     ):
         self.manifest = manifest
         self.source_checkout = source_checkout.resolve()
+        self.support_wheels = support_wheels or {}
         self._contract = RepositoryCandidateContract(manifest)
 
     def prepare_campaign(self, campaign: Any) -> None:
@@ -33,7 +35,12 @@ class RepositoryIntegration:
             raise RuntimeError("repository horizon v1 requires --framework CuteDSL")
         if campaign.framework_baseline != "never":
             raise RuntimeError("repository horizon requires --framework-baseline never")
-        seed_workspace(campaign, self.manifest, self.source_checkout)
+        seed_workspace(
+            campaign,
+            self.manifest,
+            self.source_checkout,
+            support_wheels=self.support_wheels,
+        )
         self._ensure_measured_v0(campaign)
 
     def _ensure_measured_v0(self, campaign: Any) -> None:
@@ -42,6 +49,10 @@ class RepositoryIntegration:
         if (memory.get("correctness") or {}).get("status") == "PASS":
             return
         revision = git_head(campaign.workspace)
+        # V0 compares the exact same commit twice, so give each cold library
+        # import/JIT/evaluator run the largest budget that still fits in the
+        # gateway allocation. Candidate verification retains four-run A-B-B-A.
+        baseline_run_timeout = max(1, (campaign.sandbox_timeout - 30) // 2)
         verifier = RepositoryABBAValidator(
             manifest=self.manifest,
             atrex_bench_root=Path(campaign.atrex_bench_root),
@@ -50,6 +61,7 @@ class RepositoryIntegration:
             url=campaign.sandbox_url,
             timeout=campaign.sandbox_timeout,
             repeats=1,
+            per_run_timeout=baseline_run_timeout,
             min_improvement_pct=-100.0,
         )
         verification = verifier.verify(

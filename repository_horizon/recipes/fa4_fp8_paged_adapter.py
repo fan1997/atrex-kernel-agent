@@ -6,7 +6,7 @@ from flash_attn.cute import flash_attn_func
 
 
 class Model(nn.Module):
-    """Mudi V0: auditable official-FA4 dense fallback for P64 paged KV."""
+    """Auditable official-FA4 dense fallback for paged FP8 KV."""
 
     def forward(
         self,
@@ -23,8 +23,11 @@ class Model(nn.Module):
     ) -> torch.Tensor:
         del cu_seqlens_k, paged_kv_indptr, paged_kv_indices
         del paged_kv_last_page_len
-        if key_cache.shape[1] != 64:
-            raise ValueError("FA4 repository recipe requires page_size=64")
+        page_size = key_cache.shape[1]
+        if page_size not in (64, 128):
+            raise ValueError(
+                f"FA4 repository recipe requires page_size 64 or 128, got {page_size}"
+            )
         head_dim = q.shape[-1]
         num_kv_heads = key_cache.shape[2]
         query_bounds = [int(value) for value in cu_seqlens_q.tolist()]
@@ -33,7 +36,7 @@ class Model(nn.Module):
             query_start = query_bounds[request]
             query_end = query_bounds[request + 1]
             kv_length = int(seq_lens[request].item())
-            num_pages = (kv_length + 63) // 64
+            num_pages = (kv_length + page_size - 1) // page_size
             page_ids = block_table[request, :num_pages].long()
             key = key_cache[page_ids].reshape(-1, num_kv_heads, head_dim)[:kv_length]
             value = value_cache[page_ids].reshape(-1, num_kv_heads, head_dim)[

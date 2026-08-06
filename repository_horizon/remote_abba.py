@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 RESULT_PREFIX = "[test_kernel] RESULT_JSON="
@@ -87,6 +88,10 @@ def main() -> int:
         manifests = request["manifests"]
         command = request["command"]
         timeout = int(request["run_timeout_seconds"])
+        probe_roots = [
+            str(stage / "runtime" / item) for item in request.get("python_roots", [])
+        ]
+        sys.path[:0] = probe_roots
         _check_runtime(request.get("runtime_requirements", []))
         run_root = stage / ".runs"
         cache_root = stage / ".jit_cache"

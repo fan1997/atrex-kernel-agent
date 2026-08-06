@@ -13,8 +13,14 @@ from long_horizon import main_adapter
 from long_horizon.git_episode import git_head
 from long_horizon.protocol import atomic_write_json
 
-from .lockfile import write_lock
+from .lockfile import tree_digest, write_lock
 from .manifest import RepositoryManifest
+from .support_wheel import (
+    canonical_distribution,
+    extract_support_wheel,
+    validate_support_imports,
+    wheel_sha256,
+)
 
 OP_FILES = (
     "reference.py",
@@ -50,7 +56,9 @@ def seed_workspace(
     campaign,
     manifest: RepositoryManifest,
     source_checkout: Path,
+    support_wheels: dict[str, Path] | None = None,
 ) -> None:
+    support_wheels = support_wheels or {}
     workspace = campaign.workspace
     if workspace.exists():
         if not git_head(workspace):
@@ -81,6 +89,40 @@ def seed_workspace(
         if requested_manifest_hash != expected_manifest_hash:
             raise RuntimeError(
                 "requested source manifest differs from resumed campaign lock"
+            )
+        support_root = workspace / "vendor_support"
+        locked_support = lock.get("runtime_support") or []
+        if len(locked_support) != len(manifest.runtime_support):
+            raise RuntimeError(
+                "runtime support manifest differs from resumed campaign lock"
+            )
+        configured_support = {
+            canonical_distribution(config.distribution): config
+            for config in manifest.runtime_support
+        }
+        for item in locked_support:
+            distribution = canonical_distribution(str(item.get("distribution", "")))
+            config = configured_support.get(distribution)
+            if config is None:
+                raise RuntimeError(
+                    "runtime support distribution differs from resumed campaign lock"
+                )
+            if item.get("version") != config.version:
+                raise RuntimeError(
+                    "runtime support version differs from resumed campaign lock"
+                )
+            supplied = support_wheels.get(distribution)
+            if supplied and wheel_sha256(supplied) != item.get("wheel_sha256"):
+                raise RuntimeError(
+                    f"supplied support wheel differs from resumed lock: {distribution}"
+                )
+        expected_support = lock.get("runtime_support_tree_sha256")
+        actual_support, _ = tree_digest(support_root)
+        if locked_support and (
+            not expected_support or actual_support != expected_support
+        ):
+            raise RuntimeError(
+                "protected vendor_support no longer matches source.lock.json"
             )
         main_adapter.link_episode_runtime(campaign, workspace)
         return
@@ -124,6 +166,27 @@ def seed_workspace(
     ).stdout
     vendor_root = workspace / manifest.vendor_root
     _extract_archive(archive, vendor_root)
+    support_records: list[dict[str, object]] = []
+    if manifest.runtime_support:
+        support_root = workspace / "vendor_support"
+        missing = []
+        for config in manifest.runtime_support:
+            key = canonical_distribution(config.distribution)
+            wheel = support_wheels.get(key)
+            if wheel is None:
+                missing.append(config.distribution)
+                continue
+            package_root = support_root / config.package.replace(".", "/")
+            if package_root.exists():
+                raise RuntimeError(
+                    f"runtime support packages overlap: {config.package}"
+                )
+            support_records.append(extract_support_wheel(config, wheel, support_root))
+        if missing:
+            raise RuntimeError(
+                "new campaign requires --support-wheel for: " + ", ".join(missing)
+            )
+        validate_support_imports(vendor_root, manifest.runtime_support, support_root)
     manifest_bytes = manifest.path.read_bytes()
     (workspace / "source_manifest.json").write_bytes(manifest_bytes)
     write_lock(
@@ -133,6 +196,10 @@ def seed_workspace(
         source_root=vendor_root,
         manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
         atrex_bench_root=campaign.atrex_bench_root,
+        runtime_support=support_records,
+        runtime_support_root=(workspace / "vendor_support")
+        if support_records
+        else None,
     )
     (workspace / ".gitignore").write_text(
         "__pycache__/\n*.pyc\n/.repository_horizon_runtime/\n", encoding="utf-8"

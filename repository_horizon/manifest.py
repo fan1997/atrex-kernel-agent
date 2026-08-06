@@ -25,6 +25,16 @@ class RuntimeRequirement:
 
 
 @dataclass(frozen=True)
+class RuntimeSupportWheel:
+    distribution: str
+    version: str
+    package: str
+    members: tuple[str, ...]
+    dist_info_members: tuple[str, ...]
+    generate_minimal_init: bool = True
+
+
+@dataclass(frozen=True)
 class RepositoryManifest:
     path: Path
     name: str
@@ -36,6 +46,7 @@ class RepositoryManifest:
     package_root: str
     measurement: MeasurementConfig
     runtime_requirements: tuple[RuntimeRequirement, ...]
+    runtime_support: tuple[RuntimeSupportWheel, ...]
 
     @property
     def vendor_root(self) -> str:
@@ -58,6 +69,13 @@ def _paths(value: Any, field: str) -> tuple[str, ...]:
     return tuple(
         normalize_relative_path(_nonempty_string(item, field)) for item in value
     )
+
+
+def _package_name(value: Any, field: str) -> str:
+    package = _nonempty_string(value, field)
+    if any(not part.isidentifier() for part in package.split(".")):
+        raise ValueError(f"{field} must be a dotted Python package name")
+    return package
 
 
 def load_manifest(path: str | Path) -> RepositoryManifest:
@@ -102,6 +120,49 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
                 version=_nonempty_string(item.get("version"), "version"),
             )
         )
+    support_payload = payload.get("runtime_support") or []
+    if not isinstance(support_payload, list):
+        raise ValueError("runtime_support must be a list")
+    support = []
+    seen_support: set[str] = set()
+    for index, item in enumerate(support_payload):
+        if not isinstance(item, dict):
+            raise ValueError(f"runtime_support[{index}] must be an object")
+        distribution = _nonempty_string(
+            item.get("distribution"), f"runtime_support[{index}].distribution"
+        )
+        if distribution.lower() in seen_support:
+            raise ValueError(f"duplicate runtime support distribution: {distribution}")
+        seen_support.add(distribution.lower())
+        members = _paths(item.get("members"), f"runtime_support[{index}].members")
+        package = _package_name(
+            item.get("package"), f"runtime_support[{index}].package"
+        )
+        package_root = package.replace(".", "/") + "/"
+        if any(not member.startswith(package_root) for member in members):
+            raise ValueError(
+                f"runtime_support[{index}].members must stay under {package_root}"
+            )
+        dist_info_members = _paths(
+            item.get("dist_info_members", ["METADATA", "WHEEL"]),
+            f"runtime_support[{index}].dist_info_members",
+        )
+        if any("/" in member for member in dist_info_members):
+            raise ValueError(
+                f"runtime_support[{index}].dist_info_members must be file names"
+            )
+        support.append(
+            RuntimeSupportWheel(
+                distribution=distribution,
+                version=_nonempty_string(
+                    item.get("version"), f"runtime_support[{index}].version"
+                ),
+                package=package,
+                members=members,
+                dist_info_members=dist_info_members,
+                generate_minimal_init=bool(item.get("generate_minimal_init", True)),
+            )
+        )
     adapter_value = _nonempty_string(payload.get("adapter"), "adapter")
     adapter = (manifest_path.parent / adapter_value).resolve()
     if not adapter.is_file():
@@ -125,4 +186,5 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
         else ".",
         measurement=measurement,
         runtime_requirements=tuple(requirements),
+        runtime_support=tuple(support),
     )
