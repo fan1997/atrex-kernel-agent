@@ -49,6 +49,33 @@ including `test_kernel.py`, `definition.json`, `reference.py`, `workload.jsonl`,
 Historical attempts are evidence, not orders. Do not repeat a rejected direction unless new evidence
 or a materially different implementation makes it worthwhile.
 
+## Strategy-level escalation after repeated non-promotions
+
+Completed consecutive episodes without a promotion before this episode:
+`{{CONSECUTIVE_WITHOUT_PROMOTION}}`.
+
+When this count is **3 or greater**, incremental variations of the incumbent strategy are no longer
+an adequate episode direction. This episode MUST expand to a materially different, strategy-level
+design and carry at least one such candidate through implementation plus correctness and performance
+evaluation. Examples include 1-CTA to 2-CTA or multi-CTA decomposition, a dedicated specialized
+kernel instead of the generic path, a different scheduler or work partition, a different tiling or
+pipeline organization, or a different data-movement/producer-consumer architecture. A coherent
+strategy-level change may span multiple editable files; "smallest coherent source change" does not
+mean a single-line or single-file tweak.
+
+For a repository-assisted campaign, search the entire manifest-declared source snapshot and its
+entire bounded history corpus for reusable strategies before selecting the redesign. Inspect sibling
+and alternate kernels, schedulers, loaders, dispatch paths, and analogous operators across the
+repository, rather than limiting archaeology to the incumbent file, class, function, or current
+execution pattern. Corpus, editable-root, hidden-answer, and external-source restrictions remain
+fully in force: broad repository search does not authorize fetching or inspecting undeclared refs,
+future commits, pull requests, traces, or sibling checkouts.
+
+Record the strategy alternatives searched, why the selected direction is materially different, and
+the implementation and measurement evidence. If no admissible strategy-level candidate can be
+implemented, finish with an evidence-backed `pivot`; do not fall back to another incremental variant
+in the same episode merely to produce a candidate.
+
 ## Development loop and journal
 
 Use the current immutable evaluator for development measurements. Repeated development measurements

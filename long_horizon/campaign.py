@@ -139,6 +139,7 @@ class LongHorizonCampaign:
             "HARDWARE": directives["hardware"],
             "SANDBOX": directives["sandbox"],
             "HISTORY": self._history(state),
+            "CONSECUTIVE_WITHOUT_PROMOTION": state.consecutive_without_promotion,
             "JOURNAL_COMMAND": journal_command,
             "MAIN_ITERATION_PLAYBOOK": main_adapter.iteration_playbook(
                 self.base_campaign, worktree.path, version
