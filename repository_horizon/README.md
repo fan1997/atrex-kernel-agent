@@ -17,6 +17,10 @@ Autonomous guarantees:
   projects are linked into an episode;
 - Codex multi-agent support is disabled through session settings by default;
 - one coding session owns one episode, with bounded terminal-handoff recovery;
+- development evaluation uses Agate `--no-wait`; the coding Agent suspends after submission while
+  the repository supervisor waits and then resumes the same native Claude/Codex session;
+- pending jobs and terminal results are persisted below
+  `.repository_horizon_runtime/evaluations/`, so GPU queue time does not consume Agent tokens;
 - failed, pivoted, blocked, and interrupted attempts are archived under
   `.atrex_long_horizon/episodes/` without advancing the incumbent branch;
 - canonical `memory/vN.json` versions are created only by verified promotions.

@@ -16,7 +16,6 @@ from .candidate import RepositoryCandidateContract
 from .compat import (
     CampaignStore,
     EpisodeWorktree,
-    LongSessionRunner,
     RUNTIME_DIR,
     changed_paths,
     git_head,
@@ -29,9 +28,11 @@ from .compat import (
     validate_terminal,
     working_changes,
 )
+from .evaluation import load_pending
 from .manifest import RepositoryManifest
 from .prompt import render_prompt
 from .runtime import autonomous_environment, install_minimal_runtime
+from .session import RepositorySessionRunner
 from .verifier import RepositoryABBAValidator
 
 
@@ -47,7 +48,7 @@ class RepositoryAutonomousCampaign:
     handoff_resumes: int = 1
     max_stall: int = 0
     worktree_root: Path | None = None
-    session_runner: LongSessionRunner | None = None
+    session_runner: Any | None = None
 
     @property
     def workspace(self) -> Path:
@@ -255,6 +256,42 @@ class RepositoryAutonomousCampaign:
             },
         }
 
+    def _wait_for_development_evaluation(self, handoff_path: Path) -> str:
+        value = json.loads(handoff_path.read_text(encoding="utf-8"))
+        if value.get("status") != "awaiting_evaluation":
+            raise ValueError("repository evaluation handoff has an invalid status")
+        pending_path = Path(str(value.get("pending_path", ""))).resolve()
+        expected_root = (
+            handoff_path.parent / "evaluations"
+        ).resolve()
+        try:
+            pending_path.relative_to(expected_root)
+        except ValueError as exc:
+            raise ValueError(
+                "repository evaluation pending path escaped the episode runtime"
+            ) from exc
+        pending = load_pending(pending_path)
+        if pending.job_id != str(value.get("job_id", "")):
+            raise ValueError("repository evaluation handoff job id does not match pending state")
+        print(
+            f"[repository-horizon] evaluation={pending.evaluation_id} "
+            f"job={pending.job_id} phase=awaiting_evaluation",
+            flush=True,
+        )
+        verification = self.verifier.collect(pending)
+        print(
+            f"[repository-horizon] evaluation={pending.evaluation_id} "
+            f"job={pending.job_id} gate={verification.gate} phase=evaluation_complete",
+            flush=True,
+        )
+        return (
+            "The repository supervisor completed the exact Agate evaluation you submitted. "
+            f"Read the structured result at `{pending.result_path}` and the evidence beside it. "
+            "Do not resubmit the same checkpoint. Continue the same optimization episode from the "
+            "current worktree; submit another evaluation only after a material code change, or "
+            "publish the final candidate_ready, pivot, or blocked handoff."
+        )
+
     def run(self) -> str:
         environment = autonomous_environment()
         os.environ["ATREX_CODEX_SESSION_SETTINGS"] = environment[
@@ -269,8 +306,9 @@ class RepositoryAutonomousCampaign:
                 "repository campaign requires a clean incumbent workspace: "
                 + ", ".join(working_changes(self.workspace)[:12])
             )
-        runner = self.session_runner or LongSessionRunner(
-            agent_cli=self.base_campaign.agent_cli
+        runner = self.session_runner or RepositorySessionRunner(
+            agent_cli=self.base_campaign.agent_cli,
+            evaluation_waiter=self._wait_for_development_evaluation,
         )
         reason = "budget: max-episodes"
 
@@ -365,14 +403,38 @@ class RepositoryAutonomousCampaign:
             elif status == "candidate_ready":
                 violation, paths = self._validate_candidate(worktree, candidate_commit)
                 if not violation:
-                    active["phase"] = "verifying"
+                    active["phase"] = "submitting_verification"
                     store.save_active(active)
-                    verification = self.verifier.verify(
-                        worktree.path,
-                        base_commit=base_commit,
-                        candidate_commit=candidate_commit,
-                        changed_paths=self.candidate_contract.verification_paths(paths),
-                    )
+                    try:
+                        pending = self.verifier.submit(
+                            worktree.path,
+                            base_commit=base_commit,
+                            candidate_commit=candidate_commit,
+                            changed_paths=self.candidate_contract.verification_paths(
+                                paths
+                            ),
+                        )
+                        active.update(
+                            {
+                                "phase": "awaiting_verification",
+                                "verification_id": pending.evaluation_id,
+                                "verification_job_id": pending.job_id,
+                                "verification_pending": str(pending.pending_path),
+                            }
+                        )
+                        store.save_active(active)
+                        verification = self.verifier.collect(pending)
+                    except Exception as exc:
+                        verification = VerificationResult(
+                            "ERROR",
+                            None,
+                            None,
+                            None,
+                            error=(
+                                "repository final verification failed: "
+                                f"{type(exc).__name__}: {exc}"
+                            ),
+                        )
                     accepted = verification.passed
 
             episode_dir = store.episode_dir(episode)
@@ -399,6 +461,15 @@ class RepositoryAutonomousCampaign:
                 "agent_invocations": len(result.invocations),
                 "child_sessions": 0,
                 "wait_agent_calls": 0,
+                "evaluation_jobs": len(
+                    list(
+                        (
+                            worktree.path
+                            / ".repository_horizon_runtime"
+                            / "evaluations"
+                        ).glob("*/pending.json")
+                    )
+                ),
                 "prompt_bytes": len(prompt.encode("utf-8")),
                 "tokens": result.tokens,
                 "summary": outcome.get("summary") if isinstance(outcome, dict) else None,

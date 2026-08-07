@@ -5,11 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from long_horizon.git_episode import git_head
 from long_horizon.journal import append_experiment, finalize
 from long_horizon.models import EpisodeHandoff, SessionResult, SupervisorState
 from long_horizon.protocol import atomic_write_json
+from orchestrator.agent_runtime.model import AgentRuntimeCapabilities, TokenUsage
 
 from repository_horizon.campaign import RepositoryAutonomousCampaign
 from repository_horizon.compat import assert_upstream_compatible
@@ -17,6 +19,7 @@ from repository_horizon.manifest import load_manifest
 from repository_horizon.policy import install_repository_policy
 from repository_horizon.prompt import MAX_PROMPT_BYTES, render_prompt
 from repository_horizon.runtime import autonomous_environment, install_minimal_runtime
+from repository_horizon.session import RepositorySessionRunner
 from repository_horizon.tests.helpers import init_repo, run_git
 
 
@@ -90,6 +93,8 @@ class AutonomousOverlayTests(unittest.TestCase):
                 state=SupervisorState(),
             )
         self.assertLessEqual(len(prompt.encode("utf-8")), MAX_PROMPT_BYTES)
+        self.assertIn("repository_horizon.dev_eval submit", prompt)
+        self.assertIn("stop the current Agent invocation immediately", prompt)
         lowered = prompt.lower()
         for forbidden in (
             "humanize",
@@ -159,6 +164,93 @@ class AutonomousOverlayTests(unittest.TestCase):
             self.assertEqual(state["episodes"], 1)
             self.assertEqual(state["pivoted"], 1)
             self.assertEqual(state["attempts"][0]["prompt_bytes"] > 0, True)
+
+    def test_repository_runner_suspends_for_evaluation_then_resumes_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            handoff_path = workspace / ".atrex_long_horizon" / "handoff.json"
+            evaluation_path = (
+                workspace
+                / ".repository_horizon_runtime"
+                / "evaluation_handoff.json"
+            )
+            calls: list[list[str]] = []
+
+            def executor(command, current_workspace, timeout, environment):
+                del timeout, environment
+                self.assertEqual(current_workspace, workspace)
+                calls.append(command)
+                if len(calls) == 1:
+                    atomic_write_json(
+                        evaluation_path,
+                        {
+                            "status": "awaiting_evaluation",
+                            "job_id": "job-1",
+                            "pending_path": str(workspace / "pending.json"),
+                        },
+                    )
+                else:
+                    atomic_write_json(handoff_path, {"status": "pivot"})
+                return "stream", "", 0, False
+
+            waited: list[Path] = []
+
+            def waiter(path: Path) -> str:
+                waited.append(path)
+                return "Evaluation complete. Read result.json and continue."
+
+            capabilities = AgentRuntimeCapabilities(False, False, False)
+            with (
+                mock.patch(
+                    "repository_horizon.session.main_adapter.session_environment",
+                    return_value={},
+                ),
+                mock.patch(
+                    "repository_horizon.session.main_adapter.fresh_session_command",
+                    side_effect=lambda prompt, *_: ["fresh", prompt],
+                ),
+                mock.patch(
+                    "repository_horizon.session.main_adapter.resume_session_command",
+                    side_effect=lambda prompt, session_id, *_: [
+                        "resume",
+                        session_id,
+                        prompt,
+                    ],
+                ),
+                mock.patch(
+                    "repository_horizon.session.main_adapter.session_id_from_stream",
+                    return_value="thread-1",
+                ),
+                mock.patch(
+                    "repository_horizon.session.main_adapter.normalize_stream",
+                    return_value=((), TokenUsage.zero(), capabilities, ()),
+                ),
+                mock.patch(
+                    "repository_horizon.session.main_adapter.tokens_from_stream",
+                    return_value=0,
+                ),
+            ):
+                result = RepositorySessionRunner(
+                    evaluation_waiter=waiter,
+                    executor=executor,
+                    agent_cli="claude",
+                ).run(
+                    workspace,
+                    "initial prompt",
+                    timeout=60,
+                    handoff_path=handoff_path,
+                    handoff_resumes=1,
+                    completion_check=lambda handoff: "",
+                )
+
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0], ["fresh", "initial prompt"])
+            self.assertEqual(calls[1][0:2], ["resume", "thread-1"])
+            self.assertIn("Evaluation complete", calls[1][-1])
+            self.assertEqual(waited, [evaluation_path])
+            self.assertFalse(evaluation_path.exists())
+            self.assertEqual(result.handoff, EpisodeHandoff("pivot"))
+            self.assertEqual(result.resume_count, 1)
 
 
 if __name__ == "__main__":

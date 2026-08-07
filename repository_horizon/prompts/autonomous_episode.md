@@ -30,6 +30,13 @@ All GPU imports, compilation, correctness checks, benchmarks, and profiling must
 {{DEV_EVAL_COMMAND}}
 ```
 
+This command submits one repository-staged Agate job with `--no-wait` and returns a job ID. After a
+successful submission, stop the current Agent invocation immediately. Do not run `agate get`, the
+`status` or `collect` development-evaluation subcommands, shell sleep loops, terminal polling, or a
+second identical submission. The external repository supervisor waits without an active model,
+persists the terminal result, and resumes this same coding session with the result path. Continue
+engineering only after that resume.
+
 The external supervisor independently validates a candidate with repository-staged correctness and
 same-allocation ABBA timing. Development measurements are evidence, not promotion authority.
 

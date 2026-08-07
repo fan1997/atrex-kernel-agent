@@ -27,7 +27,7 @@ from repository_horizon.policy import install_repository_policy
 from repository_horizon.seed import seed_workspace
 from repository_horizon.staging import build_abba_stage
 from repository_horizon.support_wheel import extract_support_wheel
-from repository_horizon.transport import _payload
+from repository_horizon.transport import _payload, get_agate_job, submit_agate_dev
 
 
 def make_source(root: Path) -> tuple[Path, str]:
@@ -512,6 +512,54 @@ class SeedAndStagingTests(unittest.TestCase):
         sentinel = "__ATREX_LONG_HORIZON_ABBA_RESULT__=" + json.dumps(payload)
         output = json.dumps({"result": {"stdout": "prefix\n" + sentinel + "\n"}})
         self.assertEqual(_payload(output), payload)
+
+    def test_agate_development_submission_is_non_waiting(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"job_id":"job-123456789012","status":"queued"}\n',
+            stderr="",
+        )
+        with mock.patch(
+            "repository_horizon.transport.subprocess.run", return_value=completed
+        ) as run:
+            pending = submit_agate_dev(
+                Path("/tmp/stage"),
+                hardware="L20D",
+                profile="prod",
+                url="",
+                job_timeout=600,
+            )
+        command = run.call_args.args[0]
+        self.assertEqual(pending.job_id, "job-123456789012")
+        self.assertIn("--no-wait", command)
+        self.assertNotIn("--wait-timeout", command)
+        self.assertNotIn("--wait", command)
+
+    def test_agate_get_preserves_failed_terminal_job(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "job_id": "job-123456789012",
+                    "status": "failed",
+                    "error": "worker unavailable",
+                    "result": None,
+                }
+            ),
+            stderr="",
+        )
+        with mock.patch(
+            "repository_horizon.transport.subprocess.run", return_value=completed
+        ):
+            snapshot = get_agate_job(
+                "job-123456789012",
+                profile="prod",
+                url="",
+            )
+        self.assertTrue(snapshot.terminal)
+        self.assertEqual(snapshot.status, "failed")
 
     def test_support_wheel_is_minimized_locked_and_importable(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

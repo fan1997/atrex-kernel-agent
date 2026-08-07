@@ -75,7 +75,7 @@ def render_prompt(
     state: SupervisorState,
 ) -> str:
     command = (
-        f"PYTHONPATH={module_root()} python -m repository_horizon.dev_eval "
+        f"PYTHONPATH={module_root()} python -m repository_horizon.dev_eval submit "
         f"--workspace {worktree.path} --hardware {campaign.sandbox_hardware}"
     )
     if campaign.sandbox_profile:

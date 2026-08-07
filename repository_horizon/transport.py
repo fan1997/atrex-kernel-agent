@@ -8,6 +8,29 @@ from pathlib import Path
 from typing import Any
 
 ABBA_PREFIX = "__ATREX_LONG_HORIZON_ABBA_RESULT__="
+TERMINAL_JOB_STATUSES = frozenset({"succeeded", "failed", "cancelled", "timed_out"})
+
+
+@dataclass(frozen=True)
+class PendingAgateJob:
+    job_id: str
+    command: tuple[str, ...]
+    stdout: str
+    stderr: str
+
+
+@dataclass(frozen=True)
+class AgateJobSnapshot:
+    job_id: str
+    status: str
+    response: dict[str, Any]
+    stdout: str
+    stderr: str
+    command: tuple[str, ...]
+
+    @property
+    def terminal(self) -> bool:
+        return self.status in TERMINAL_JOB_STATUSES
 
 
 @dataclass(frozen=True)
@@ -30,10 +53,9 @@ def _all_strings(value: Any):
             yield from _all_strings(item)
 
 
-def _payload(output: str) -> dict[str, Any]:
-    candidates = [output]
+def _json_objects(output: str) -> list[dict[str, Any]]:
     decoder = json.JSONDecoder()
-    responses: list[dict[str, Any]] = []
+    values: list[dict[str, Any]] = []
     for index, character in enumerate(output):
         if character != "{":
             continue
@@ -42,8 +64,14 @@ def _payload(output: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         if isinstance(value, dict):
-            responses.append(value)
-            candidates.extend(_all_strings(value))
+            values.append(value)
+    return values
+
+
+def _payload(output: str) -> dict[str, Any]:
+    candidates = [output]
+    for value in _json_objects(output):
+        candidates.extend(_all_strings(value))
     for line in output.splitlines():
         try:
             candidates.extend(_all_strings(json.loads(line)))
@@ -64,28 +92,11 @@ def _payload(output: str) -> dict[str, Any]:
     raise ValueError("Agate dev output has no repository ABBA result sentinel")
 
 
-def _response(output: str) -> dict[str, Any]:
-    decoder = json.JSONDecoder()
-    values = []
-    for index, character in enumerate(output):
-        if character != "{":
-            continue
-        try:
-            value, _ = decoder.raw_decode(output[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict) and "status" in value and "result" in value:
-            values.append(value)
-    if not values:
-        raise ValueError("Agate dev output has no terminal job object")
-    return values[-1]
-
-
 def _job_id(output: str) -> str:
     patterns = (
         r'"job_id"\s*:\s*"([^"]+)"',
         r'"id"\s*:\s*"([0-9a-fA-F-]{16,})"',
-        r"\bjob[_ -]?id[=: ]+([0-9a-zA-Z-]{16,})",
+        r"\bjob[_ -]?id[=: ]+([0-9a-zA-Z_.-]{12,})",
     )
     for pattern in patterns:
         match = re.search(pattern, output, re.IGNORECASE)
@@ -94,20 +105,41 @@ def _job_id(output: str) -> str:
     return ""
 
 
-def run_agate_dev(
+def _job_response(output: str, expected_job_id: str = "") -> dict[str, Any]:
+    candidates = []
+    for value in _json_objects(output):
+        job_id = value.get("job_id") or value.get("id")
+        if not isinstance(job_id, str):
+            continue
+        if expected_job_id and job_id != expected_job_id:
+            continue
+        candidates.append(value)
+    if candidates:
+        return candidates[-1]
+    job_id = _job_id(output)
+    if job_id and (not expected_job_id or job_id == expected_job_id):
+        return {"job_id": job_id, "status": "submitted"}
+    raise ValueError("Agate output has no job object or job id")
+
+
+def _endpoint_args(*, profile: str, url: str) -> list[str]:
+    if url:
+        return ["--url", url]
+    if profile:
+        return ["--profile", profile]
+    return []
+
+
+def submit_agate_dev(
     stage: Path,
     *,
     hardware: str,
     profile: str,
     url: str,
     job_timeout: int,
-    wait_timeout: int,
-) -> AgateDevResult:
-    command = ["agate", "dev"]
-    if url:
-        command += ["--url", url]
-    elif profile:
-        command += ["--profile", profile]
+    submit_timeout: int = 120,
+) -> PendingAgateJob:
+    command = ["agate", "dev", *_endpoint_args(profile=profile, url=url)]
     command += [
         "--gpu",
         hardware,
@@ -115,21 +147,71 @@ def run_agate_dev(
         str(stage),
         "--job-timeout",
         str(job_timeout),
-        "--wait-timeout",
-        str(wait_timeout),
         "--intent",
         "custom_harness",
         "--note",
         "repository horizon same-allocation ABBA verification",
+        "--no-wait",
         "python3 repo_abba.py",
     ]
     process = subprocess.run(
-        command, capture_output=True, text=True, timeout=wait_timeout + 120
+        command, capture_output=True, text=True, timeout=submit_timeout
     )
     combined = process.stdout + "\n" + process.stderr
     if process.returncode != 0:
-        raise RuntimeError(f"agate dev exited {process.returncode}: {combined[-5000:]}")
-    response = _response(combined)
+        raise RuntimeError(f"agate dev submit exited {process.returncode}: {combined[-5000:]}")
+    response = _job_response(combined)
+    job_id = str(response.get("job_id") or response.get("id") or _job_id(combined))
+    if not job_id:
+        raise RuntimeError("agate dev --no-wait returned no job id")
+    return PendingAgateJob(
+        job_id=job_id,
+        command=tuple(command),
+        stdout=process.stdout,
+        stderr=process.stderr,
+    )
+
+
+def get_agate_job(
+    job_id: str,
+    *,
+    profile: str,
+    url: str,
+    http_timeout: int = 600,
+) -> AgateJobSnapshot:
+    command = ["agate", "get", *_endpoint_args(profile=profile, url=url)]
+    command += ["--http-timeout", str(http_timeout), "--spec", job_id]
+    process = subprocess.run(
+        command, capture_output=True, text=True, timeout=http_timeout + 30
+    )
+    combined = process.stdout + "\n" + process.stderr
+    try:
+        response = _job_response(combined, expected_job_id=job_id)
+    except ValueError:
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"agate get exited {process.returncode}: {combined[-5000:]}"
+            )
+        raise
+    snapshot = AgateJobSnapshot(
+        job_id=job_id,
+        status=str(response.get("status") or "unknown"),
+        response=response,
+        stdout=process.stdout,
+        stderr=process.stderr,
+        command=tuple(command),
+    )
+    if process.returncode != 0 and not snapshot.terminal:
+        raise RuntimeError(f"agate get exited {process.returncode}: {combined[-5000:]}")
+    return snapshot
+
+
+def collect_agate_dev(snapshot: AgateJobSnapshot) -> AgateDevResult:
+    if not snapshot.terminal:
+        raise RuntimeError(
+            f"Agate job {snapshot.job_id} is not terminal: {snapshot.status}"
+        )
+    response = snapshot.response
     result = response.get("result") if isinstance(response.get("result"), dict) else {}
     if (
         response.get("status") != "succeeded"
@@ -141,7 +223,7 @@ def run_agate_dev(
             "Agate dev terminal status rejected: "
             + json.dumps(
                 {
-                    "job_id": response.get("job_id"),
+                    "job_id": snapshot.job_id,
                     "status": response.get("status"),
                     "error": response.get("error"),
                     "command_ok": response.get("command_ok"),
@@ -151,11 +233,12 @@ def run_agate_dev(
                 ensure_ascii=False,
             )
         )
-    payload = _payload(combined)
+    rendered = json.dumps(response, ensure_ascii=False)
+    payload = _payload(rendered + "\n" + snapshot.stdout + "\n" + snapshot.stderr)
     return AgateDevResult(
         payload=payload,
-        stdout=process.stdout,
-        stderr=process.stderr,
-        job_id=str(response.get("job_id") or _job_id(combined)),
-        command=tuple(command),
+        stdout=snapshot.stdout,
+        stderr=snapshot.stderr,
+        job_id=snapshot.job_id,
+        command=snapshot.command,
     )
