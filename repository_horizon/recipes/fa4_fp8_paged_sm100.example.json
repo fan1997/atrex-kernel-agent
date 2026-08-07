@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "name": "fa4_fp8_paged_sm100",
+  "adapter": "fa4_fp8_paged_native_adapter.py",
+  "source": {
+    "name": "flash_attention",
+    "revision": "b54df166ebb69b896892826014759d09b9c3c9c6",
+    "archive_paths": [
+      "flash_attn/cute"
+    ],
+    "package_root": "."
+  },
+  "editable_roots": [
+    "flash_attn/cute"
+  ],
+  "repository_search": {
+    "mode": "replay_strict",
+    "excluded_commits": [
+      "3e18806fdc32b6731c6f7dc168e062ae7d0497c7"
+    ],
+    "require_report": true
+  },
+  "bringup": {
+    "mode": "auto",
+    "probe_repeats": 1
+  },
+  "runtime_requirements": [
+    {
+      "distribution": "nvidia-cutlass-dsl",
+      "import": "cutlass.cute",
+      "version": "==4.6.1"
+    },
+    {
+      "distribution": "quack-kernels",
+      "import": "quack",
+      "version": "==0.5.3"
+    },
+    {
+      "distribution": "torch",
+      "import": "torch",
+      "version": ">=2.9.0"
+    }
+  ],
+  "runtime_support": [
+    {
+      "distribution": "quack-kernels",
+      "version": "0.5.3",
+      "package": "quack",
+      "members": [
+        "quack/activation.py",
+        "quack/compile_utils.py",
+        "quack/copy_utils.py",
+        "quack/cute_dsl_utils.py",
+        "quack/layout_utils.py",
+        "quack/rounding.py",
+        "quack/sm90_utils.py",
+        "quack/utils.py"
+      ],
+      "dist_info_members": [
+        "METADATA",
+        "WHEEL",
+        "top_level.txt"
+      ],
+      "generate_minimal_init": true
+    }
+  ],
+  "measurement": {
+    "warmup": 10,
+    "timed_runs": 100,
+    "repeats": 2,
+    "per_run_timeout": 142,
+    "min_improvement_pct": 1.0
+  }
+}
