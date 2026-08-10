@@ -8,6 +8,7 @@ from typing import Any
 from long_horizon.git_episode import git_head
 from long_horizon.protocol import atomic_write_json
 
+from .config import endpoint_is_local
 from .manifest import RepositoryManifest
 from .seed import seed_workspace
 from .verifier import RepositoryABBAValidator
@@ -48,10 +49,17 @@ class RepositoryBaselineManager:
         memory = json.loads(memory_path.read_text(encoding="utf-8"))
         if v0_path.is_file() and (memory.get("correctness") or {}).get("status") == "PASS":
             return
+        if (
+            bringup_enabled
+            and not v0_path.is_file()
+            and (memory.get("probe") or {}).get("classification") == "WORKLOAD_FAIL"
+        ):
+            return
 
         revision = git_head(campaign.workspace)
         run_count = self.manifest.bringup.probe_repeats if bringup_enabled else 2
         baseline_run_timeout = max(1, (campaign.sandbox_timeout - 30) // run_count)
+        policy = getattr(campaign, "repository_evaluation_policy", None)
         verifier = RepositoryABBAValidator(
             manifest=self.manifest,
             atrex_bench_root=Path(campaign.atrex_bench_root),
@@ -63,6 +71,19 @@ class RepositoryBaselineManager:
             per_run_timeout=baseline_run_timeout,
             min_improvement_pct=-100.0,
             candidate_only=bringup_enabled,
+            backend=getattr(policy, "backend", "agate"),
+            wait_mode=(
+                policy.resolved_wait_mode(
+                    campaign.agent_cli,
+                    endpoint_is_local=endpoint_is_local(
+                        campaign.sandbox_url, campaign.sandbox_hardware
+                    ),
+                )
+                if policy is not None
+                else "suspend"
+            ),
+            wait_timeout=getattr(policy, "wait_timeout", 14_400),
+            agent_result_max_bytes=getattr(policy, "agent_result_max_bytes", 16 * 1024),
         )
         verification = verifier.verify(
             campaign.workspace,
@@ -71,6 +92,11 @@ class RepositoryBaselineManager:
             changed_paths=[],
         )
         if not verification.passed:
+            if verification.gate == "ERROR":
+                raise RuntimeError(
+                    "repository R0 probe had no authoritative workload outcome: "
+                    f"{verification.error}; artifact={verification.artifact}"
+                )
             if not bringup_enabled:
                 raise RuntimeError(
                     "repository V0 failed remote validation: "
@@ -84,6 +110,7 @@ class RepositoryBaselineManager:
             memory["probe"] = {
                 "gate": verification.gate,
                 "artifact": verification.artifact,
+                "classification": "WORKLOAD_FAIL",
             }
             atomic_write_json(memory_path, memory)
             self._amend(campaign.workspace, memory_path)

@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from long_horizon.models import VerificationResult, VerificationRun
+from long_horizon.journal import append_experiment
 from long_horizon.protocol import atomic_write_json
 
-from .transport import AgateJobSnapshot, get_agate_job
+from .transport import AgateJobSnapshot, get_agate_job, get_local_job
 
 
 def utc_now() -> str:
@@ -37,6 +39,13 @@ class PendingVerification:
     packed_bytes: int
     submit_command: tuple[str, ...]
     submitted_at: str
+    backend: str = "agate"
+    wait_mode: str = "suspend"
+    request_digest: str = ""
+    snapshot_kind: str = "commit"
+    kind: str = "abba"
+    detail: dict[str, Any] | None = None
+    agent_result_max_bytes: int = 16 * 1024
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -69,6 +78,13 @@ class PendingVerification:
             packed_bytes=int(value["packed_bytes"]),
             submit_command=tuple(str(item) for item in value.get("submit_command", [])),
             submitted_at=str(value["submitted_at"]),
+            backend=str(value.get("backend", "agate")),
+            wait_mode=str(value.get("wait_mode", "suspend")),
+            request_digest=str(value.get("request_digest", "")),
+            snapshot_kind=str(value.get("snapshot_kind", "commit")),
+            kind=str(value.get("kind", "abba")),
+            detail=(dict(value["detail"]) if isinstance(value.get("detail"), dict) else None),
+            agent_result_max_bytes=int(value.get("agent_result_max_bytes", 16 * 1024)),
         )
 
     @property
@@ -93,6 +109,77 @@ def load_pending(path: Path) -> PendingVerification:
     return PendingVerification.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
+def verification_from_dict(value: object) -> VerificationResult:
+    if not isinstance(value, dict):
+        raise ValueError("verification result must be a JSON object")
+    runs = []
+    for item in value.get("runs", []):
+        if isinstance(item, dict):
+            runs.append(
+                VerificationRun(
+                    revision=str(item.get("revision", "")),
+                    repeat=int(item.get("repeat", 0)),
+                    exit_code=int(item.get("exit_code", -1)),
+                    result=(dict(item["result"]) if isinstance(item.get("result"), dict) else None),
+                    stdout_tail=str(item.get("stdout_tail", "")),
+                    stderr_tail=str(item.get("stderr_tail", "")),
+                )
+            )
+    return VerificationResult(
+        gate=str(value.get("gate", "ERROR")),
+        candidate_latency_us=value.get("candidate_latency_us"),
+        incumbent_latency_us=value.get("incumbent_latency_us"),
+        improvement_pct=value.get("improvement_pct"),
+        runs=runs,
+        error=str(value.get("error") or ""),
+        artifact=str(value.get("artifact") or ""),
+    )
+
+
+def load_completed_verification(pending: PendingVerification) -> VerificationResult | None:
+    if not pending.result_path.is_file():
+        return None
+    return verification_from_dict(
+        json.loads(pending.result_path.read_text(encoding="utf-8"))
+    )
+
+
+def append_evaluation_experiment(
+    workspace: Path,
+    pending: PendingVerification,
+    verification: VerificationResult,
+) -> None:
+    """Record one evaluation exactly once, regardless of inline/suspend/restart."""
+
+    journal_path = workspace / ".atrex_long_horizon" / "journal.json"
+    if not journal_path.is_file():
+        return
+    name = f"evaluation-{pending.evaluation_id[:8]}"
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    experiments = journal.get("experiments") if isinstance(journal, dict) else None
+    if isinstance(experiments, list) and any(
+        isinstance(item, dict) and item.get("name") == name for item in experiments
+    ):
+        return
+    append_experiment(
+        journal_path,
+        {
+            "name": name,
+            "hypothesis": "Agent-requested development evaluation",
+            "change": f"snapshot={pending.request_digest[:12]}",
+            "evidence": str(pending.directory / "agent_result.json"),
+            "result": (
+                f"gate={verification.gate}; improvement_pct="
+                f"{verification.improvement_pct}; error={verification.error or '-'}"
+            ),
+            "decision": "continue",
+        },
+    )
+
+
 def wait_for_terminal_job(
     pending: PendingVerification,
     *,
@@ -101,15 +188,22 @@ def wait_for_terminal_job(
     status_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> AgateJobSnapshot:
     deadline = time.monotonic() + pending.wait_timeout
-    delay = max(1.0, initial_poll_seconds)
+    if pending.backend == "local" and initial_poll_seconds == 30.0:
+        initial_poll_seconds = 0.25
+        max_poll_seconds = min(max_poll_seconds, 2.0)
+    delay = max(0.1, initial_poll_seconds)
     failures = 0
     last_error = ""
     while True:
         try:
-            snapshot = get_agate_job(
-                pending.job_id,
-                profile=pending.profile,
-                url=pending.url,
+            snapshot = (
+                get_local_job(Path(pending.stage), pending.job_id)
+                if pending.backend == "local"
+                else get_agate_job(
+                    pending.job_id,
+                    profile=pending.profile,
+                    url=pending.url,
+                )
             )
             failures = 0
             last_error = ""
@@ -167,6 +261,9 @@ def write_evaluation_handoff(workspace: Path, pending: PendingVerification) -> P
             "evaluation_id": pending.evaluation_id,
             "job_id": pending.job_id,
             "candidate_commit": pending.candidate_commit,
+            "backend": pending.backend,
+            "wait_mode": pending.wait_mode,
+            "request_digest": pending.request_digest,
             "pending_path": str(pending.pending_path),
             "submitted_at": pending.submitted_at,
         },

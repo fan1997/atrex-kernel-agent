@@ -94,7 +94,9 @@ class AutonomousOverlayTests(unittest.TestCase):
             )
         self.assertLessEqual(len(prompt.encode("utf-8")), MAX_PROMPT_BYTES)
         self.assertIn("repository_horizon.dev_eval submit", prompt)
-        self.assertIn("stop the current Agent invocation immediately", prompt)
+        self.assertIn("Configured wait mode: `suspend`", prompt)
+        self.assertIn("supervisor waits without an active model", prompt)
+        self.assertIn("Optional typed profiling", prompt)
         lowered = prompt.lower()
         for forbidden in (
             "humanize",
@@ -251,6 +253,15 @@ class AutonomousOverlayTests(unittest.TestCase):
             self.assertFalse(evaluation_path.exists())
             self.assertEqual(result.handoff, EpisodeHandoff("pivot"))
             self.assertEqual(result.resume_count, 1)
+            checkpoint = json.loads(
+                (
+                    workspace
+                    / ".repository_horizon_runtime"
+                    / "session_checkpoint.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(checkpoint["session_id"], "thread-1")
+            self.assertEqual(checkpoint["invocation_count"], 2)
 
 
 if __name__ == "__main__":

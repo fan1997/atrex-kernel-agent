@@ -8,8 +8,10 @@ from pathlib import Path
 from orchestrator.optimize import Campaign, framework_workspace_suffix
 
 from .baseline import RepositoryBaselineManager
+from .capabilities import probe_capabilities
 from .campaign import RepositoryAutonomousCampaign
 from .compat import assert_upstream_compatible, git_head, latest_version, working_changes
+from .config import EvaluationPolicy, endpoint_is_local
 from .manifest import load_manifest
 from .support_wheel import canonical_distribution
 from .verifier import RepositoryABBAValidator, RepositoryPhaseValidator
@@ -45,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sandbox-profile", choices=("pre", "prod"), default="")
     parser.add_argument("--sandbox-url", default="")
     parser.add_argument("--sandbox-timeout", type=int, default=600)
+    parser.add_argument("--evaluation-backend", choices=("agate", "local"), default="agate")
+    parser.add_argument(
+        "--evaluation-wait-mode", choices=("auto", "inline", "suspend"), default="auto"
+    )
+    parser.add_argument(
+        "--suspend-enforcement", choices=("graceful", "enforced"), default="enforced"
+    )
+    parser.add_argument("--suspend-grace-seconds", type=float, default=5.0)
+    parser.add_argument("--evaluation-wait-timeout", type=int, default=14_400)
+    parser.add_argument("--agent-result-max-bytes", type=int, default=16 * 1024)
+    parser.add_argument("--resume-prompt-max-bytes", type=int, default=2 * 1024)
     parser.add_argument(
         "--agent-cli",
         choices=("claude", "qodercli", "codex", "pi"),
@@ -131,6 +144,19 @@ def main(argv: list[str] | None = None) -> int:
         atrex_root = _atrex_bench_root(op_dir)
         workspace_root = Path(args.workspace).expanduser().resolve() if args.workspace else Path.cwd()
         hardware = args.sandbox_hardware or args.platform
+        policy = EvaluationPolicy(
+            backend=args.evaluation_backend,
+            wait_mode=args.evaluation_wait_mode,
+            suspend_enforcement=args.suspend_enforcement,
+            suspend_grace_seconds=args.suspend_grace_seconds,
+            wait_timeout=args.evaluation_wait_timeout,
+            agent_result_max_bytes=args.agent_result_max_bytes,
+            resume_prompt_max_bytes=args.resume_prompt_max_bytes,
+        )
+        resolved_wait_mode = policy.resolved_wait_mode(
+            args.agent_cli,
+            endpoint_is_local=endpoint_is_local(args.sandbox_url, hardware),
+        )
         suffix = framework_workspace_suffix(
             args.framework, args.platform, args.optimization_mode
         )
@@ -160,6 +186,13 @@ def main(argv: list[str] | None = None) -> int:
             verify_run_timeout=args.verify_run_timeout,
             min_improvement_pct=args.min_improvement_pct,
         )
+        campaign.repository_evaluation_policy = policy
+        campaign.repository_capabilities = probe_capabilities(
+            policy,
+            hardware=hardware,
+            profile=args.sandbox_profile,
+            url=args.sandbox_url,
+        )
         baseline = RepositoryBaselineManager(
             manifest,
             source_checkout,
@@ -175,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
             repeats=args.verify_repeats,
             per_run_timeout=args.verify_run_timeout,
             min_improvement_pct=args.min_improvement_pct,
+            backend=policy.backend,
+            wait_mode=resolved_wait_mode,
+            wait_timeout=policy.wait_timeout,
+            agent_result_max_bytes=policy.agent_result_max_bytes,
         )
         bringup_repeats = manifest.bringup.probe_repeats
         bringup = RepositoryABBAValidator(
@@ -188,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
             per_run_timeout=max(1, (args.sandbox_timeout - 30) // bringup_repeats),
             min_improvement_pct=-100.0,
             candidate_only=True,
+            backend=policy.backend,
+            wait_mode=resolved_wait_mode,
+            wait_timeout=policy.wait_timeout,
+            agent_result_max_bytes=policy.agent_result_max_bytes,
         )
         controller = RepositoryAutonomousCampaign(
             base_campaign=campaign,
@@ -199,10 +240,12 @@ def main(argv: list[str] | None = None) -> int:
             session_timeout=args.iter_timeout,
             handoff_resumes=args.handoff_resumes,
             max_stall=args.max_stall,
+            evaluation_policy=policy,
         )
         print(
             f"[repository-horizon] source={manifest.source_name}@{manifest.revision[:12]} "
             f"agent={args.agent_cli} policy=autonomous platform={args.platform} "
+            f"evaluation={policy.backend}/{resolved_wait_mode} "
             f"hardware={hardware} endpoint={args.sandbox_profile or args.sandbox_url or 'default'} "
             f"workspace={campaign.workspace}",
             flush=True,

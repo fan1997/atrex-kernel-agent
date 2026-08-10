@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import shutil
 import subprocess
 import tarfile
@@ -89,6 +90,7 @@ def build_abba_stage(
     destination: Path,
     schedule: list[dict[str, int | str]],
     per_run_timeout: int,
+    working_snapshot: bool = False,
 ) -> dict:
     destination.mkdir(parents=True, exist_ok=False)
     runtime = destination / "runtime"
@@ -104,7 +106,11 @@ def build_abba_stage(
         path = PurePosixPath(relative)
         if path.is_absolute() or ".." in path.parts:
             raise ValueError(f"unsafe changed path: {relative}")
-        content = _blob(workspace, candidate_commit, relative)
+        source_path = workspace / path
+        content = (
+            source_path.read_bytes() if working_snapshot and source_path.is_file()
+            else (None if working_snapshot else _blob(workspace, candidate_commit, relative))
+        )
         if content is None:
             candidate_manifest[relative] = None
         else:
@@ -161,4 +167,12 @@ def build_abba_stage(
             "packed_tar_gz_bytes_before_manifest": size,
         },
     )
-    return {"packed_bytes": packed_size(destination), "request": request}
+    digest = hashlib.sha256()
+    for path in sorted(item for item in destination.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(destination).as_posix().encode("utf-8"))
+        digest.update(path.read_bytes())
+    return {
+        "packed_bytes": packed_size(destination),
+        "request": request,
+        "request_digest": digest.hexdigest(),
+    }

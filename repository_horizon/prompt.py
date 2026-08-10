@@ -7,6 +7,7 @@ from typing import Any
 from long_horizon.models import SupervisorState
 
 from .compat import module_root
+from .config import EvaluationPolicy, endpoint_is_local
 from .corpus import CORPUS_RELATIVE, read_catalog
 from .manifest import RepositoryManifest
 
@@ -73,15 +74,39 @@ def render_prompt(
     journal_path: Path,
     handoff_path: Path,
     state: SupervisorState,
+    evaluation_policy: EvaluationPolicy | None = None,
 ) -> str:
+    policy = evaluation_policy or EvaluationPolicy()
+    wait_mode = policy.resolved_wait_mode(
+        getattr(campaign, "agent_cli", "claude"),
+        endpoint_is_local=endpoint_is_local(
+            str(getattr(campaign, "sandbox_url", "")),
+            str(getattr(campaign, "sandbox_hardware", "")),
+        ),
+    )
     command = (
         f"PYTHONPATH={module_root()} python -m repository_horizon.dev_eval submit "
-        f"--workspace {worktree.path} --hardware {campaign.sandbox_hardware}"
+        f"--workspace {worktree.path} --hardware {campaign.sandbox_hardware} "
+        f"--backend {policy.backend} --wait-mode {wait_mode} "
+        f"--wait-timeout {policy.wait_timeout} --agent-cli "
+        f"{getattr(campaign, 'agent_cli', 'claude')} --agent-result-max-bytes "
+        f"{policy.agent_result_max_bytes}"
     )
     if campaign.sandbox_profile:
         command += f" --profile {campaign.sandbox_profile}"
     if campaign.sandbox_url:
         command += f" --url {campaign.sandbox_url}"
+    profile_command = (
+        f"PYTHONPATH={module_root()} python -m repository_horizon.dev_eval profile "
+        f"--workspace {worktree.path} --hardware {campaign.sandbox_hardware} "
+        f"--backend {policy.backend} --wait-mode {wait_mode}"
+        f" --agent-result-max-bytes {policy.agent_result_max_bytes} --route auto"
+        f" --agent-cli {getattr(campaign, 'agent_cli', 'claude')}"
+    )
+    if campaign.sandbox_profile:
+        profile_command += f" --profile {campaign.sandbox_profile}"
+    if campaign.sandbox_url:
+        profile_command += f" --url {campaign.sandbox_url}"
     journal_command = f"PYTHONPATH={module_root()} python -m long_horizon.journal"
     values: dict[str, object] = {
         "EPISODE": episode,
@@ -101,6 +126,15 @@ def render_prompt(
         "HANDOFF_PATH": handoff_path,
         "NOTES": campaign.notes,
         "DEV_EVAL_COMMAND": command,
+        "PROFILE_COMMAND": profile_command,
+        "EVALUATION_WAIT_MODE": wait_mode,
+        "EVALUATION_BEHAVIOR": (
+            "The command blocks until the result is persisted and returns a compact result card "
+            "to this invocation. Do not poll the gateway yourself."
+            if wait_mode == "inline"
+            else "The command submits once and publishes a handoff. End this invocation after it "
+            "returns; the supervisor waits without an active model and resumes this native session."
+        ),
         "HISTORY": compact_history(state),
         "JOURNAL_COMMAND": journal_command,
         "STALL_SIGNAL": (

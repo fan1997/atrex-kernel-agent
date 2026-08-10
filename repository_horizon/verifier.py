@@ -1,23 +1,27 @@
 from __future__ import annotations
 
 import json
+import math
+import shutil
 import uuid
 from pathlib import Path
 
-from long_horizon.models import VerificationResult
+from long_horizon.models import VerificationResult, VerificationRun
 from long_horizon.protocol import atomic_write_json
 from long_horizon.verifier import score_verification_payload, verification_schedule
 
 from .evaluation import (
     PendingVerification,
+    load_completed_verification,
     load_pending,
     save_pending,
     utc_now,
     wait_for_terminal_job,
 )
+from .agent_result import write_agent_result
 from .manifest import RepositoryManifest
 from .staging import build_abba_stage
-from .transport import collect_agate_dev, submit_agate_dev
+from .transport import collect_agate_dev, submit_agate_dev, submit_local_dev
 
 
 def _safe_command(command: tuple[str, ...]) -> list[str]:
@@ -35,6 +39,82 @@ def _safe_command(command: tuple[str, ...]) -> list[str]:
     return result
 
 
+def _candidate_latency(result: object) -> float | None:
+    if not isinstance(result, dict) or not result.get("all_pass"):
+        return None
+    value = result.get("latency_us_geomean")
+    if not isinstance(value, (int, float)):
+        performance = result.get("performance")
+        value = performance.get("latency_us") if isinstance(performance, dict) else None
+    if not isinstance(value, (int, float)) or value <= 0 or not math.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def _score_candidate_only(
+    payload: object,
+    *,
+    schedule: list[dict[str, Any]],
+    repeats: int,
+    artifact: str,
+) -> VerificationResult:
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return VerificationResult("ERROR", None, None, None, error="unsupported result schema")
+    rows = payload.get("runs")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        return VerificationResult("ERROR", None, None, None, error="runs must be a list of objects")
+    runs = [
+        VerificationRun(
+            revision=str(row.get("revision", "")),
+            repeat=int(row.get("repeat", -1)),
+            exit_code=int(row.get("exit_code", -1)),
+            result=(dict(row["result"]) if isinstance(row.get("result"), dict) else None),
+            stdout_tail=str(row.get("stdout_tail", "")),
+            stderr_tail=str(row.get("stderr_tail", "")),
+        )
+        for row in rows
+    ]
+    if payload.get("error"):
+        return VerificationResult(
+            "ERROR", None, None, None, runs=runs, error=str(payload["error"]), artifact=artifact
+        )
+    actual = [{"revision": run.revision, "repeat": run.repeat} for run in runs]
+    if actual != schedule:
+        return VerificationResult(
+            "ERROR",
+            None,
+            None,
+            None,
+            runs=runs,
+            error="remote verifier did not execute the exact candidate-only schedule",
+            artifact=artifact,
+        )
+    values = [
+        value
+        for run in runs
+        if run.revision == "candidate" and run.exit_code == 0
+        if (value := _candidate_latency(run.result)) is not None
+    ]
+    if len(values) != repeats:
+        return VerificationResult(
+            "FAIL",
+            None,
+            None,
+            None,
+            runs=runs,
+            error="not every authoritative candidate run passed",
+            artifact=artifact,
+        )
+    candidate = (
+        values[0]
+        if len(values) == 1
+        else math.exp(sum(math.log(value) for value in values) / len(values))
+    )
+    return VerificationResult(
+        "PASS", candidate, candidate, 0.0, runs=runs, artifact=artifact
+    )
+
+
 def collect_pending_verification(
     pending_or_path: PendingVerification | Path,
 ) -> VerificationResult:
@@ -43,7 +123,10 @@ def collect_pending_verification(
         if isinstance(pending_or_path, PendingVerification)
         else load_pending(pending_or_path)
     )
-    evidence_path = pending.directory / "agate_result.json"
+    completed = load_completed_verification(pending)
+    if completed is not None:
+        return completed
+    evidence_path = pending.directory / "transport_result.json"
     try:
         snapshot = wait_for_terminal_job(pending)
         result = collect_agate_dev(snapshot)
@@ -60,18 +143,26 @@ def collect_pending_verification(
             "candidate_commit": pending.candidate_commit,
             "changed_paths": list(pending.changed_paths),
             "payload": result.payload,
-            "gateway_response": snapshot.response,
+            "transport_response": snapshot.response,
             "stdout_tail": result.stdout[-8000:],
             "stderr_tail": result.stderr[-8000:],
         }
         atomic_write_json(evidence_path, evidence)
-        verification = score_verification_payload(
-            result.payload,
-            schedule=list(pending.schedule),
-            repeats=pending.repeats,
-            min_improvement_pct=pending.min_improvement_pct,
-            artifact=str(evidence_path),
-            candidate_only=pending.candidate_only,
+        verification = (
+            _score_candidate_only(
+                result.payload,
+                schedule=list(pending.schedule),
+                repeats=pending.repeats,
+                artifact=str(evidence_path),
+            )
+            if pending.candidate_only
+            else score_verification_payload(
+                result.payload,
+                schedule=list(pending.schedule),
+                repeats=pending.repeats,
+                min_improvement_pct=pending.min_improvement_pct,
+                artifact=str(evidence_path),
+            )
         )
     except Exception as exc:
         verification = VerificationResult(
@@ -86,6 +177,14 @@ def collect_pending_verification(
             artifact=str(pending.directory),
         )
     atomic_write_json(pending.result_path, verification.as_dict())
+    write_agent_result(
+        pending.directory,
+        verification,
+        evaluation_id=pending.evaluation_id,
+        backend=pending.backend,
+        request_digest=pending.request_digest,
+        max_bytes=pending.agent_result_max_bytes,
+    )
     return verification
 
 
@@ -105,6 +204,9 @@ class RepositoryABBAValidator:
         wait_timeout: int = 14_400,
         max_packed_bytes: int = 900_000,
         candidate_only: bool = False,
+        backend: str = "agate",
+        wait_mode: str = "suspend",
+        agent_result_max_bytes: int = 16 * 1024,
     ):
         self.manifest = manifest
         self.atrex_bench_root = atrex_bench_root
@@ -122,6 +224,9 @@ class RepositoryABBAValidator:
         self.wait_timeout = wait_timeout
         self.max_packed_bytes = max_packed_bytes
         self.candidate_only = candidate_only
+        self.backend = backend
+        self.wait_mode = wait_mode
+        self.agent_result_max_bytes = agent_result_max_bytes
 
     def submit(
         self,
@@ -130,6 +235,7 @@ class RepositoryABBAValidator:
         base_commit: str,
         candidate_commit: str,
         changed_paths: list[str],
+        working_snapshot: bool = False,
     ) -> PendingVerification:
         schedule = (
             [
@@ -157,18 +263,31 @@ class RepositoryABBAValidator:
             destination=stage,
             schedule=schedule,
             per_run_timeout=self.per_run_timeout,
+            working_snapshot=working_snapshot,
         )
         if metadata["packed_bytes"] > self.max_packed_bytes:
             raise ValueError(
                 f"repository staging payload is {metadata['packed_bytes']} bytes; "
                 f"Agate working-dir limit is {self.max_packed_bytes}"
             )
-        submitted = submit_agate_dev(
-            stage,
-            hardware=self.hardware,
-            profile=self.profile,
-            url=self.url,
-            job_timeout=self.timeout,
+        for existing_path in runtime_root.glob("*/pending.json"):
+            existing = load_pending(existing_path)
+            if (
+                existing.request_digest == metadata["request_digest"]
+                and not existing.result_path.is_file()
+            ):
+                shutil.rmtree(stage.parent)
+                return existing
+        submitted = (
+            submit_local_dev(stage, job_timeout=self.timeout)
+            if self.backend == "local"
+            else submit_agate_dev(
+                stage,
+                hardware=self.hardware,
+                profile=self.profile,
+                url=self.url,
+                job_timeout=self.timeout,
+            )
         )
         pending = PendingVerification(
             schema_version=1,
@@ -190,6 +309,11 @@ class RepositoryABBAValidator:
             packed_bytes=int(metadata["packed_bytes"]),
             submit_command=submitted.command,
             submitted_at=utc_now(),
+            backend=self.backend,
+            wait_mode=self.wait_mode,
+            request_digest=str(metadata["request_digest"]),
+            snapshot_kind="worktree" if working_snapshot else "commit",
+            agent_result_max_bytes=self.agent_result_max_bytes,
         )
         save_pending(pending)
         atomic_write_json(

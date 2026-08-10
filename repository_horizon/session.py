@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import signal
+import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -10,6 +12,7 @@ from typing import Callable
 from long_horizon import main_adapter
 from long_horizon.models import EpisodeHandoff, InvocationObservation, SessionResult
 from long_horizon.protocol import handoff_diagnosis, read_handoff
+from long_horizon.protocol import atomic_write_json
 from long_horizon.session import (
     CommandExecutor,
     CompletionCheck,
@@ -19,6 +22,11 @@ from long_horizon.session import (
 )
 from orchestrator.agent_runtime.codex_ledger import CodexSessionLedgerObserver, codex_home
 from orchestrator.agent_runtime.model import TokenUsage, token_usage_exceeds
+from orchestrator.agent_runtime.process import (
+    dependency_guard,
+    descendant_process_groups,
+    signal_process_groups,
+)
 
 from .evaluation import evaluation_handoff_path
 
@@ -36,11 +44,89 @@ class RepositorySessionRunner:
         executor: CommandExecutor | None = None,
         agent_cli: str = "claude",
         max_evaluations: int = 32,
+        wait_mode: str = "suspend",
+        suspend_enforcement: str = "enforced",
+        suspend_grace_seconds: float = 5.0,
+        evaluation_backend: str = "agate",
     ):
         self.evaluation_waiter = evaluation_waiter
         self.executor = executor or main_adapter.run_bounded
         self.agent_cli = agent_cli
         self.max_evaluations = max(1, max_evaluations)
+        self.wait_mode = wait_mode
+        self.suspend_enforcement = suspend_enforcement
+        self.suspend_grace_seconds = max(0.0, suspend_grace_seconds)
+        self.evaluation_backend = evaluation_backend
+
+    def _execute(
+        self,
+        command: list[str],
+        workspace: Path,
+        timeout: int,
+        environment: dict[str, str],
+        evaluation_path: Path,
+    ) -> tuple[str, str, int, bool]:
+        if self.executor is not main_adapter.run_bounded:
+            return self.executor(command, workspace, timeout, environment)
+        proc = subprocess.Popen(
+            command,
+            cwd=str(workspace),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            env=environment,
+        )
+        guard_stop = threading.Event()
+        violations: list[str] = []
+        guard = None
+        if self.evaluation_backend != "local":
+            guard = threading.Thread(
+                target=dependency_guard,
+                args=(proc, guard_stop, violations),
+                daemon=True,
+            )
+            guard.start()
+        deadline = time.monotonic() + timeout
+        evaluation_seen_at: float | None = None
+        timed_out = False
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    signal_process_groups(descendant_process_groups(proc.pid), signal.SIGKILL)
+                    break
+                try:
+                    stdout, stderr = proc.communicate(timeout=min(0.25, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    if self.wait_mode != "suspend" or not evaluation_path.is_file():
+                        continue
+                    if evaluation_seen_at is None:
+                        evaluation_seen_at = time.monotonic()
+                    if self.suspend_enforcement != "enforced":
+                        continue
+                    if time.monotonic() - evaluation_seen_at < self.suspend_grace_seconds:
+                        continue
+                    groups = descendant_process_groups(proc.pid)
+                    signal_process_groups(groups, signal.SIGTERM)
+                    try:
+                        stdout, stderr = proc.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        signal_process_groups(groups, signal.SIGKILL)
+                        stdout, stderr = proc.communicate()
+                    break
+            if timed_out:
+                stdout, stderr = proc.communicate()
+        finally:
+            guard_stop.set()
+            if guard is not None:
+                guard.join(timeout=1)
+        if violations:
+            stderr = (stderr or "") + "\n" + "\n".join(violations)
+        return stdout or "", stderr or "", int(proc.returncode or 0), timed_out
 
     def run(
         self,
@@ -54,14 +140,25 @@ class RepositorySessionRunner:
         reasoning_effort: str = "max",
         session_id: str = "",
         telemetry_environment: Mapping[str, str] | None = None,
+        resume_existing: bool = False,
+        initial_tokens: int = 0,
+        initial_resume_count: int = 0,
+        initial_invocation_count: int = 0,
+        initial_agent_seconds_remaining: float | None = None,
     ) -> SessionResult:
         requested_session_id = session_id or str(uuid.uuid4())
         is_codex = self.agent_cli == "codex"
-        active_session_id = "" if is_codex else requested_session_id
+        active_session_id = requested_session_id if resume_existing else (
+            "" if is_codex else requested_session_id
+        )
         handoff_path.parent.mkdir(parents=True, exist_ok=True)
         handoff_path.unlink(missing_ok=True)
         evaluation_path = evaluation_handoff_path(workspace)
-        evaluation_path.unlink(missing_ok=True)
+        if not resume_existing:
+            evaluation_path.unlink(missing_ok=True)
+        checkpoint_path = (
+            workspace / ".repository_horizon_runtime" / "session_checkpoint.json"
+        )
 
         environment = main_adapter.session_environment(self.agent_cli)
         environment["IS_SANDBOX"] = "1"
@@ -86,17 +183,22 @@ class RepositorySessionRunner:
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         invocations: list[InvocationObservation] = []
-        total_tokens = 0
-        agent_seconds_remaining = float(timeout)
+        total_tokens = max(0, initial_tokens)
+        agent_seconds_remaining = (
+            max(0.0, initial_agent_seconds_remaining)
+            if initial_agent_seconds_remaining is not None
+            else float(timeout)
+        )
         completion_diagnosis = ""
         handoff: EpisodeHandoff | None = None
         exit_status = 0
         timed_out = False
-        resume_count = 0
+        resume_count = max(0, initial_resume_count)
         repair_count = 0
         evaluation_count = 0
         turn_prompt = prompt
-        fresh = True
+        fresh = not resume_existing
+        invocation_count = max(0, initial_invocation_count)
 
         while True:
             if agent_seconds_remaining <= 0:
@@ -136,11 +238,12 @@ class RepositorySessionRunner:
             if handoff_resumes > repair_count and turn_timeout > 610:
                 turn_timeout -= 600
             started = time.monotonic()
-            stdout, stderr, exit_status, turn_timed_out = self.executor(
+            stdout, stderr, exit_status, turn_timed_out = self._execute(
                 command,
                 workspace,
                 turn_timeout,
                 environment,
+                evaluation_path,
             )
             agent_seconds_remaining -= time.monotonic() - started
             stdout_parts.append(stdout)
@@ -213,6 +316,19 @@ class RepositorySessionRunner:
                     observation_errors=observation_errors,
                     resume_usage_qualified=resume_usage_qualified,
                 )
+            )
+            invocation_count += 1
+            atomic_write_json(
+                checkpoint_path,
+                {
+                    "schema_version": 1,
+                    "agent_cli": self.agent_cli,
+                    "session_id": active_session_id or requested_session_id,
+                    "tokens": total_tokens,
+                    "resume_count": resume_count,
+                    "invocation_count": invocation_count,
+                    "agent_seconds_remaining": agent_seconds_remaining,
+                },
             )
             timed_out = turn_timed_out
 

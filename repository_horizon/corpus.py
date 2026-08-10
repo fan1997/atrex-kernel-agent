@@ -175,19 +175,14 @@ def build_source_corpus(
     if not commits or revision not in commits:
         raise RuntimeError("source corpus does not contain its locked R0 revision")
     if config.mode == "replay_strict":
-        unexpected = [
-            commit
-            for commit in commits
-            if _bare(
-                destination,
-                "merge-base",
-                "--is-ancestor",
-                commit,
-                revision,
-                check=False,
-            ).returncode
-            != 0
-        ]
+        # `rev-list <revision>` is exactly the set of commits reachable from
+        # the locked R0 revision.  Computing it once avoids spawning one
+        # `git merge-base --is-ancestor` process per corpus commit, which made
+        # large replay-strict repositories spend minutes in preflight.
+        ancestors = set(
+            _bare(destination, "rev-list", revision).stdout.splitlines()
+        )
+        unexpected = [commit for commit in commits if commit not in ancestors]
         if unexpected:
             raise RuntimeError(
                 "replay_strict corpus contains non-ancestor commits: "

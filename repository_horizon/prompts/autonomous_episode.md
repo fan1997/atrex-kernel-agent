@@ -21,8 +21,9 @@ source lock, source manifest, source corpus catalog, memory, runtime support, RE
 Git refs. Do not switch branches, push, merge, rebase, or rewrite the incumbent. Private checkpoint
 commits on the current episode branch are allowed.
 
-Do the work in this one coding session. Delegation and project/global workflow skills are
-unavailable; use ordinary source inspection and shell tools.
+Own the engineering process. Profiling, research, planning, delegation, and checkpoint commits are
+optional rather than required stages. Project workflow skills and project Agent definitions are not
+installed; use ordinary source inspection and shell tools.
 
 All GPU imports, compilation, correctness checks, benchmarks, and profiling must use:
 
@@ -30,12 +31,23 @@ All GPU imports, compilation, correctness checks, benchmarks, and profiling must
 {{DEV_EVAL_COMMAND}}
 ```
 
-This command submits one repository-staged Agate job with `--no-wait` and returns a job ID. After a
-successful submission, stop the current Agent invocation immediately. Do not run `agate get`, the
-`status` or `collect` development-evaluation subcommands, shell sleep loops, terminal polling, or a
-second identical submission. The external repository supervisor waits without an active model,
-persists the terminal result, and resumes this same coding session with the result path. Continue
-engineering only after that resume.
+Optional typed profiling is available when the candidate/reference contract supports it:
+
+```bash
+{{PROFILE_COMMAND}} --level sol
+```
+
+Check `.repository_horizon_runtime/capabilities.json` first. Profiling is optional. A deep profile
+requires an exact `--kernel-name` or anchored `--kernel-regex`; use `--source` only for source-line
+evidence.
+
+Configured wait mode: `{{EVALUATION_WAIT_MODE}}`.
+
+{{EVALUATION_BEHAVIOR}}
+
+Do not run `agate get`, development-evaluation status/collect subcommands, shell sleep loops, terminal
+polling, or a second identical submission. Complete NCU logs and binary artifacts are persisted out of
+band; the command returns only a compact result card. Read deeper evidence selectively when useful.
 
 The external supervisor independently validates a candidate with repository-staged correctness and
 same-allocation ABBA timing. Development measurements are evidence, not promotion authority.

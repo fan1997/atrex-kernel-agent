@@ -10,6 +10,7 @@ from long_horizon.store import CampaignStore
 from .corpus import CORPUS_RELATIVE
 from .manifest import RepositoryManifest
 from .policy import install_repository_policy
+from .capabilities import install_capabilities
 
 
 def _link_directory(source: Path, target: Path) -> None:
@@ -39,10 +40,15 @@ def install_minimal_runtime(
 
     runtime = workspace / ".repository_horizon_runtime"
     runtime.mkdir(parents=True, exist_ok=True)
+    capabilities = getattr(campaign, "repository_capabilities", None)
+    if isinstance(capabilities, dict):
+        install_capabilities(workspace, capabilities)
 
     for forbidden in (
         workspace / ".claude" / "agents",
+        workspace / ".claude" / "skills",
         workspace / ".qoder" / "agents",
+        workspace / ".qoder" / "skills",
         workspace / ".agents" / "skills",
     ):
         if forbidden.exists() or forbidden.is_symlink():

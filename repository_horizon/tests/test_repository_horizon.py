@@ -416,6 +416,8 @@ class SeedAndStagingTests(unittest.TestCase):
                 ):
                     validator.return_value.verify.return_value = result
                     integration.prepare(campaign)
+                    integration.prepare(campaign)
+                    self.assertEqual(validator.return_value.verify.call_count, 1)
                 self.assertTrue((campaign.workspace / "memory" / "r0.json").is_file())
                 self.assertEqual((campaign.workspace / "memory" / "v0.json").is_file(), passed)
                 r0_memory = json.loads(
@@ -430,6 +432,32 @@ class SeedAndStagingTests(unittest.TestCase):
                 else:
                     self.assertEqual(r0_memory["quality_gate"]["result"], "BRINGUP_REQUIRED")
                 self.assertEqual(run_git(campaign.workspace, "status", "--porcelain"), "")
+
+    def test_r0_infrastructure_error_is_not_misclassified_as_bringup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, revision = make_source(root)
+            manifest = load_manifest(
+                make_manifest(root, revision, bringup={"mode": "auto"})
+            )
+            campaign = self._campaign_fixture(root)
+            integration = RepositoryBaselineManager(manifest, source)
+            result = VerificationResult(
+                "ERROR", None, None, None, error="GPU queue timed out"
+            )
+            with (
+                mock.patch("repository_horizon.seed.install_minimal_runtime"),
+                mock.patch("repository_horizon.baseline.RepositoryABBAValidator") as validator,
+            ):
+                validator.return_value.verify.return_value = result
+                with self.assertRaisesRegex(RuntimeError, "no authoritative workload outcome"):
+                    integration.prepare(campaign)
+            memory = json.loads(
+                (campaign.workspace / "memory" / "r0.json").read_text(encoding="utf-8")
+            )
+            self.assertNotEqual(
+                (memory.get("quality_gate") or {}).get("result"), "BRINGUP_REQUIRED"
+            )
 
     def test_seed_uses_exact_git_archive_and_stage_is_base_plus_delta(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
