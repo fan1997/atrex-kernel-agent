@@ -125,6 +125,17 @@ def render_prompt(
         "JOURNAL_PATH_SHELL": json.dumps(str(journal_path)),
         "HANDOFF_PATH": handoff_path,
         "NOTES": campaign.notes,
+        "REPOSITORY_SEARCH_REQUIREMENT": (
+            "Before finalizing a bring-up `candidate_ready`, create and commit "
+            "`plans/repository_search.json` (this evidence path is allowed). It must be JSON with "
+            "`schema_version: 1`, `source_revision` equal to the locked source revision, a non-empty "
+            "string `queries` list, a non-empty `candidates` list of objects containing a full "
+            "40-character corpus commit and an existing corpus-relative `path`, and a non-empty "
+            "`selected` object that repeats one reported commit/path and includes a non-empty `gap`. "
+            "Use `.repository_horizon_runtime/source_corpus.git` to verify every reported commit/path."
+            if manifest.repository_search.require_report
+            else ""
+        ),
         "DEV_EVAL_COMMAND": command,
         "PROFILE_COMMAND": profile_command,
         "EVALUATION_WAIT_MODE": wait_mode,

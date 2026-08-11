@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -55,6 +56,63 @@ def _json_object(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+_DIAGNOSTIC_TAIL_CHARS = 2000
+_LOW_TOKEN_INFRASTRUCTURE_THRESHOLD = 256
+_SECRET_PATTERNS = (
+    re.compile(
+        r"(?i)(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;\"'}]+"
+    ),
+    re.compile(
+        r"(?i)((?:ruibo_codex_api_key|api[_-]?key|access[_-]?token)"
+        r"\s*[\"']?\s*[:=]\s*[\"']?)[^\s,;\"'}]+"
+    ),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
+)
+_AGENT_STARTUP_FAILURE_MARKERS = (
+    "missing api key",
+    "unauthorized",
+    "authentication",
+    "error sending request",
+    "stream disconnected before completion",
+    "not inside a trusted directory",
+    "failed to start",
+    "unknown model",
+    "unsupported model",
+    "reasoning effort",
+    "permission denied",
+    "sandbox",
+)
+
+
+def _redacted_diagnostic_tail(value: str, limit: int = _DIAGNOSTIC_TAIL_CHARS) -> str:
+    redacted = str(value or "")
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub(
+            lambda match: (
+                f"{match.group(1)}[REDACTED]"
+                if match.lastindex
+                else "[REDACTED]"
+            ),
+            redacted,
+        )
+    return redacted[-max(0, limit) :]
+
+
+def _agent_infrastructure_failure(
+    result: SessionResult, handoff: EpisodeHandoff | None
+) -> bool:
+    if handoff is not None:
+        return False
+    if result.tokens <= _LOW_TOKEN_INFRASTRUCTURE_THRESHOLD:
+        return True
+    if result.exit_status == 0 and not result.timed_out:
+        return False
+    diagnostic = "\n".join(
+        (result.completion_diagnosis, result.stdout_tail, result.stderr_tail)
+    ).lower()
+    return any(marker in diagnostic for marker in _AGENT_STARTUP_FAILURE_MARKERS)
 
 
 @dataclass
@@ -568,6 +626,7 @@ class RepositoryAutonomousCampaign:
             state.tokens += result.tokens
             handoff = result.handoff
             status = handoff.status if handoff else "invalid_handoff"
+            infrastructure_failure = _agent_infrastructure_failure(result, handoff)
             candidate_commit = handoff.candidate_commit if handoff else ""
             violation = ""
             paths: list[str] = []
@@ -661,6 +720,14 @@ class RepositoryAutonomousCampaign:
                 ),
                 "prompt_bytes": len(prompt.encode("utf-8")),
                 "tokens": result.tokens,
+                "exit_status": result.exit_status,
+                "timed_out": result.timed_out,
+                "completion_diagnosis": _redacted_diagnostic_tail(
+                    result.completion_diagnosis, 1000
+                ) or None,
+                "stdout_tail": _redacted_diagnostic_tail(result.stdout_tail) or None,
+                "stderr_tail": _redacted_diagnostic_tail(result.stderr_tail) or None,
+                "infrastructure_failure": infrastructure_failure,
                 "summary": outcome.get("summary") if isinstance(outcome, dict) else None,
                 "next_directions": (
                     outcome.get("next_directions") if isinstance(outcome, dict) else None
@@ -740,6 +807,23 @@ class RepositoryAutonomousCampaign:
                 f"commit={promotion_commit or '-'}",
                 flush=True,
             )
+            if infrastructure_failure:
+                reason = "agent infrastructure failure"
+                diagnosis = attempt["completion_diagnosis"] or violation or "missing handoff"
+                print(
+                    "[repository-horizon] FAIL_FAST agent infrastructure failure: "
+                    f"episode={episode} exit={result.exit_status} "
+                    f"timed_out={result.timed_out} tokens={result.tokens} "
+                    f"diagnosis={diagnosis}",
+                    flush=True,
+                )
+                if attempt["stderr_tail"]:
+                    print(
+                        "[repository-horizon] stderr_tail(redacted):\n"
+                        f"{attempt['stderr_tail']}",
+                        flush=True,
+                    )
+                break
             if status == "blocked" and not violation:
                 reason = "blocked"
                 break

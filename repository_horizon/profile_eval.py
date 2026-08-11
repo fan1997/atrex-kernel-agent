@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -204,11 +206,12 @@ def submit_profile(
             job_timeout=job_timeout,
         )
     else:
+        local_python = os.environ.get("ATREX_LOCAL_PYTHON", sys.executable)
         submitted = (
             submit_local_dev(
                 stage,
                 job_timeout=job_timeout,
-                remote_command=("python3", "repository_profile.py"),
+                remote_command=(local_python, "repository_profile.py"),
             )
             if backend == "local"
             else submit_agate_dev(

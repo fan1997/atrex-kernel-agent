@@ -24,10 +24,19 @@ from repository_horizon.corpus import CORPUS_RELATIVE, validate_source_corpus
 from repository_horizon.baseline import RepositoryBaselineManager
 from repository_horizon.manifest import RuntimeSupportWheel, load_manifest
 from repository_horizon.policy import install_repository_policy
-from repository_horizon.seed import seed_workspace
+from repository_horizon.repository_profile import _profile_target_python
+from repository_horizon.seed import (
+    _archive_paths_with_package_boundaries,
+    seed_workspace,
+)
 from repository_horizon.staging import build_abba_stage
 from repository_horizon.support_wheel import extract_support_wheel
-from repository_horizon.transport import _payload, get_agate_job, submit_agate_dev
+from repository_horizon.transport import (
+    _payload,
+    get_agate_job,
+    submit_agate_dev,
+    submit_local_dev,
+)
 
 
 def make_source(root: Path) -> tuple[Path, str]:
@@ -341,6 +350,16 @@ class SeedAndStagingTests(unittest.TestCase):
             )
             self.assertTrue(any("excluded commit" in value for value in violations))
 
+    def test_archive_includes_parent_python_package_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source, revision = make_source(Path(temp))
+            self.assertEqual(
+                _archive_paths_with_package_boundaries(
+                    source, revision, ("flash_attn/cute",)
+                ),
+                ("flash_attn/cute", "flash_attn/__init__.py"),
+            )
+
     def test_allowlist_corpus_fetches_only_explicit_refs(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -563,6 +582,55 @@ class SeedAndStagingTests(unittest.TestCase):
         self.assertIn("--no-wait", command)
         self.assertNotIn("--wait-timeout", command)
         self.assertNotIn("--wait", command)
+
+    def test_local_development_uses_supervisor_python(self) -> None:
+        process = mock.Mock(pid=12345)
+        with mock.patch(
+            "repository_horizon.transport.subprocess.Popen", return_value=process
+        ) as popen:
+            submit_local_dev(Path("/tmp/stage"), job_timeout=600)
+        command = popen.call_args.args[0]
+        encoded = command[command.index("--command-json") + 1]
+        self.assertEqual(json.loads(encoded), [sys.executable, "repo_abba.py"])
+
+    def test_local_development_honors_pinned_python(self) -> None:
+        process = mock.Mock(pid=12345)
+        with mock.patch.dict(
+            "repository_horizon.transport.os.environ",
+            {"ATREX_LOCAL_PYTHON": "/runtime/venv/bin/python"},
+        ), mock.patch(
+            "repository_horizon.transport.subprocess.Popen", return_value=process
+        ) as popen:
+            submit_local_dev(Path("/tmp/stage"), job_timeout=600)
+        command = popen.call_args.args[0]
+        encoded = command[command.index("--command-json") + 1]
+        self.assertEqual(
+            json.loads(encoded), ["/runtime/venv/bin/python", "repo_abba.py"]
+        )
+
+    def test_ncu_profile_uses_explicit_target_python(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[2] / "tools" / "profile_nvidia.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'PROFILE_TARGET_PYTHON="${ATREX_PROFILE_TARGET_PYTHON:-${ATREX_LOCAL_PYTHON:-python3}}"',
+            script,
+        )
+        self.assertGreaterEqual(
+            script.count('"$PROFILE_TARGET_PYTHON" "$KERNEL_FILE"'), 2
+        )
+        self.assertNotIn('python "$KERNEL_FILE"', script)
+
+    def test_profile_target_python_preserves_bare_installation(self) -> None:
+        self.assertEqual(_profile_target_python({}), sys.executable)
+
+    def test_profile_target_python_honors_pinned_venv(self) -> None:
+        self.assertEqual(
+            _profile_target_python(
+                {"ATREX_LOCAL_PYTHON": "/runtime/venv/bin/python"}
+            ),
+            "/runtime/venv/bin/python",
+        )
 
     def test_agate_get_preserves_failed_terminal_job(self) -> None:
         completed = subprocess.CompletedProcess(

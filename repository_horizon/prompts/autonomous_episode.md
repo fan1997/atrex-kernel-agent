@@ -16,6 +16,8 @@ as useful. Profiling, research, and planning are optional tools, not required st
 - Handoff: `{{HANDOFF_PATH}}`
 - Additional constraints: {{NOTES}}
 
+{{REPOSITORY_SEARCH_REQUIREMENT}}
+
 Only manifest-declared editable roots may change. Do not modify the adapter, evaluator, workload,
 source lock, source manifest, source corpus catalog, memory, runtime support, README, CLAUDE.md, or
 Git refs. Do not switch branches, push, merge, rebase, or rewrite the incumbent. Private checkpoint

@@ -6,10 +6,16 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 
 PREFIX = "__REPOSITORY_HORIZON_PROFILE_RESULT__="
+
+
+def _profile_target_python(environment: dict[str, str]) -> str:
+    """Use an explicitly pinned runtime, otherwise preserve the launching Python."""
+    return environment.get("ATREX_LOCAL_PYTHON") or sys.executable
 
 
 def _safe(value: str) -> str:
@@ -66,6 +72,7 @@ def main() -> int:
         shutil.copytree(stage / "runtime", run_root)
         _apply(run_root, stage, request["manifests"]["candidate"])
         env = os.environ.copy()
+        env["ATREX_PROFILE_TARGET_PYTHON"] = _profile_target_python(env)
         roots = [str(run_root / item) for item in request.get("python_roots", [])]
         env["PYTHONPATH"] = os.pathsep.join(
             roots + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])

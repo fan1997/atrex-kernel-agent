@@ -76,6 +76,17 @@ DIFF_DIR=""
 
 # ncu-report-skill helpers path (can be overridden via environment variable)
 NCU_HELPERS="${NCU_HELPERS:-}"
+PROFILE_TARGET_PYTHON="${ATREX_PROFILE_TARGET_PYTHON:-${ATREX_LOCAL_PYTHON:-python3}}"
+
+if [[ "$PROFILE_TARGET_PYTHON" == */* ]]; then
+    if [[ ! -x "$PROFILE_TARGET_PYTHON" ]]; then
+        echo "Error: profile target Python is not executable: $PROFILE_TARGET_PYTHON"
+        exit 1
+    fi
+elif ! command -v "$PROFILE_TARGET_PYTHON" &>/dev/null; then
+    echo "Error: profile target Python is not available: $PROFILE_TARGET_PYTHON"
+    exit 1
+fi
 
 usage() {
     cat <<EOF
@@ -292,7 +303,7 @@ ncu --set full \
     --kill yes \
     ${KERNEL_FILTER[@]+"${KERNEL_FILTER[@]}"} \
     -o "$OUTPUT_DIR/ncu" \
-    python "$KERNEL_FILE"
+    "$PROFILE_TARGET_PYTHON" "$KERNEL_FILE"
 
 echo ""
 echo "ncu full report: $OUTPUT_DIR/ncu.ncu-rep"
@@ -314,7 +325,7 @@ if [[ "$COLLECT_SOURCE" == true ]]; then
         --kill yes \
         ${KERNEL_FILTER[@]+"${KERNEL_FILTER[@]}"} \
         -o "$OUTPUT_DIR/ncu_source" \
-        python "$KERNEL_FILE"
+        "$PROFILE_TARGET_PYTHON" "$KERNEL_FILE"
 
     echo ""
     echo "ncu source report: $OUTPUT_DIR/ncu_source.ncu-rep"

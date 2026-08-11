@@ -64,6 +64,22 @@ class _PivotSession:
         )
 
 
+class _InfrastructureFailureSession:
+    def run(self, workspace, prompt, **kwargs) -> SessionResult:
+        del workspace, prompt, kwargs
+        return SessionResult(
+            exit_status=1,
+            timed_out=False,
+            tokens=0,
+            session_id="failed-session",
+            resume_count=0,
+            handoff=None,
+            stdout_tail='{"type":"turn.failed","api_key":"test-placeholder"}',
+            stderr_tail="Authorization: Bearer test-placeholder",
+            completion_diagnosis="Agent exited before writing a handoff",
+        )
+
+
 class AutonomousOverlayTests(unittest.TestCase):
     def test_upstream_compatibility_surface(self) -> None:
         assert_upstream_compatible()
@@ -166,6 +182,49 @@ class AutonomousOverlayTests(unittest.TestCase):
             self.assertEqual(state["episodes"], 1)
             self.assertEqual(state["pivoted"], 1)
             self.assertEqual(state["attempts"][0]["prompt_bytes"] > 0, True)
+
+    def test_agent_infrastructure_failure_is_archived_and_fails_fast(self) -> None:
+        manifest = load_manifest(MANIFEST)
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "kernel_opt_fixture"
+            init_repo(workspace)
+            install_repository_policy(workspace, manifest)
+            run_git(workspace, "add", ".")
+            run_git(workspace, "commit", "-m", "fixture")
+            campaign = SimpleNamespace(
+                workspace=workspace,
+                agent_cli="codex",
+                sandbox_hardware="L20D",
+                sandbox_profile="prod",
+                sandbox_url="",
+                notes="fixture",
+            )
+            controller = RepositoryAutonomousCampaign(
+                base_campaign=campaign,
+                manifest=manifest,
+                baseline=_NoopBaseline(),
+                verifier=SimpleNamespace(),
+                max_episodes=3,
+                session_runner=_InfrastructureFailureSession(),
+            )
+            reason = controller.run()
+            state = json.loads(
+                (workspace / ".atrex_long_horizon" / "state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(reason, "agent infrastructure failure")
+            self.assertEqual(state["episodes"], 1)
+            self.assertEqual(state["protocol_failures"], 1)
+            attempt = state["attempts"][0]
+            self.assertEqual(attempt["exit_status"], 1)
+            self.assertIs(attempt["timed_out"], False)
+            self.assertIs(attempt["infrastructure_failure"], True)
+            self.assertIn("Agent exited", attempt["completion_diagnosis"])
+            self.assertNotIn("test-placeholder", attempt["stdout_tail"])
+            self.assertNotIn("test-placeholder", attempt["stderr_tail"])
+            self.assertIn("[REDACTED]", attempt["stdout_tail"])
+            self.assertIn("[REDACTED]", attempt["stderr_tail"])
 
     def test_repository_runner_suspends_for_evaluation_then_resumes_same_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

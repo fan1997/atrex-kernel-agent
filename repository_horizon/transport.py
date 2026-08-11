@@ -26,8 +26,15 @@ def submit_local_dev(
     stage: Path,
     *,
     job_timeout: int,
-    remote_command: tuple[str, ...] = ("python3", "repo_abba.py"),
+    remote_command: tuple[str, ...] | None = None,
 ) -> PendingAgateJob:
+    if remote_command is None:
+        # Local evaluation is part of the current Repository Horizon runtime.
+        # Prefer the launcher-pinned runtime so an Agent invoking dev_eval with
+        # a sandbox-provided system Python cannot silently change GPU packages.
+        # Fall back to the current interpreter for ordinary installations.
+        local_python = os.environ.get("ATREX_LOCAL_PYTHON", sys.executable)
+        remote_command = (local_python, "repo_abba.py")
     command = [
         sys.executable,
         "-m",

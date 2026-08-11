@@ -59,6 +59,29 @@ def _extract_archive(data: bytes, destination: Path) -> None:
         archive.extractall(destination, filter="data")
 
 
+def _archive_paths_with_package_boundaries(
+    source: Path, revision: str, archive_paths: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Include immutable parent package markers needed to import editable trees."""
+    paths = list(archive_paths)
+    seen = set(paths)
+    for raw in archive_paths:
+        current = PurePosixPath(raw).parent
+        while current.parts:
+            marker = (current / "__init__.py").as_posix()
+            if marker not in seen:
+                exists = subprocess.run(
+                    ["git", "cat-file", "-e", f"{revision}:{marker}"],
+                    cwd=str(source),
+                    capture_output=True,
+                ).returncode == 0
+                if exists:
+                    paths.append(marker)
+                    seen.add(marker)
+            current = current.parent
+    return tuple(paths)
+
+
 def seed_workspace(
     campaign,
     manifest: RepositoryManifest,
@@ -183,13 +206,16 @@ def seed_workspace(
             "repository horizon v1 requires an Atrex-Bench native operator"
         )
 
+    archive_paths = _archive_paths_with_package_boundaries(
+        source_checkout, exact_revision, manifest.archive_paths
+    )
     archive = _git(
         source_checkout,
         "archive",
         "--format=tar",
         exact_revision,
         "--",
-        *manifest.archive_paths,
+        *archive_paths,
         binary=True,
     ).stdout
     vendor_root = workspace / manifest.vendor_root

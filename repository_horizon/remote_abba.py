@@ -86,7 +86,14 @@ def main() -> int:
     try:
         schedule = request["schedule"]
         manifests = request["manifests"]
-        command = request["command"]
+        command = list(request["command"])
+        local_python = os.environ.get("ATREX_LOCAL_PYTHON", "")
+        if local_python and command and command[0] in {"python", "python3"}:
+            # A local Codex invocation may resolve the prompt's bare Python to
+            # a system interpreter. Keep the nested benchmark worker on the
+            # launcher-pinned GPU runtime as well. Remote Agate jobs do not set
+            # this variable and retain their portable `python3` command.
+            command[0] = local_python
         timeout = int(request["run_timeout_seconds"])
         probe_roots = [
             str(stage / "runtime" / item) for item in request.get("python_roots", [])
