@@ -44,22 +44,21 @@ def render_prompt(
     session, telemetry, and recovery behavior identical to main.
     """
 
-    policy = evaluation_policy or EvaluationPolicy(wait_mode="inline")
     root = shlex.quote(str(module_root()))
     workspace = shlex.quote(str(worktree.path))
-    common = (
-        f"PYTHONPATH={root} python -m repository_horizon.dev_eval "
-        f"--workspace {workspace} --hardware {shlex.quote(campaign.sandbox_hardware)} "
-        f"--backend {shlex.quote(policy.backend)} --wait-mode inline "
-        f"--wait-timeout {policy.wait_timeout} --agent-cli "
-        f"{shlex.quote(getattr(campaign, 'agent_cli', 'claude'))} "
-        f"--agent-result-max-bytes {policy.agent_result_max_bytes}"
+    public_dev = (
+        "python tools/sandbox.py --kind dev "
+        f"--hardware {shlex.quote(campaign.sandbox_hardware)}"
     )
-    endpoint = ""
     if campaign.sandbox_profile:
-        endpoint += f" --profile {shlex.quote(campaign.sandbox_profile)}"
+        public_dev += f" --gateway-profile {shlex.quote(campaign.sandbox_profile)}"
     if campaign.sandbox_url:
-        endpoint += f" --url {shlex.quote(campaign.sandbox_url)}"
+        public_dev += f" --url {shlex.quote(campaign.sandbox_url)}"
+    public_dev += (
+        " --no-sync --input vendor/flash_attention --input kernel.py "
+        "--input input.py --input reference.py -- "
+        "python profiles/<episode>/public_driver.py"
+    )
     journal_command = (
         f"PYTHONPATH={root} python -m long_horizon.journal "
         f"--live-path {shlex.quote(str(live_memory_path))}"
@@ -135,19 +134,7 @@ def render_prompt(
             "AGENT_RUNTIME": repository_agent_runtime_directive(
                 getattr(campaign, "agent_cli", "claude")
             ),
-            "DEV_EVAL_COMMAND": common.replace(
-                "repository_horizon.dev_eval ",
-                "repository_horizon.dev_eval submit ",
-                1,
-            )
-            + endpoint,
-            "PROFILE_COMMAND": common.replace(
-                "repository_horizon.dev_eval ",
-                "repository_horizon.dev_eval profile ",
-                1,
-            )
-            + endpoint
-            + " --route auto",
+            "PUBLIC_DEV_COMMAND": public_dev,
             "REPOSITORY_SEARCH_REQUIREMENT": require_report,
             "JOURNAL_COMMAND": journal_command,
         },

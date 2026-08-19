@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import runpy
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from long_horizon.campaign import LongHorizonCampaign
 from long_horizon.git_episode import EpisodeWorktree, git_head
@@ -16,6 +19,8 @@ from long_horizon.models import (
     VerificationRun,
 )
 from long_horizon.protocol import atomic_write_json
+from orchestrator.campaign import Campaign
+from orchestrator.constants import ATREX_PRIVATE_REFERENCE_ENV
 
 from repository_horizon.campaign import (
     RepositoryCampaign,
@@ -33,7 +38,6 @@ from repository_horizon.verifier import (
     _remove_private_stage_inputs,
     _require_complete_shape_coverage,
 )
-
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "recipes" / "fa4_fp8_paged_sm100.example.json"
 
@@ -86,7 +90,10 @@ class RepositoryV3Tests(unittest.TestCase):
         self.assertIn("supervisor, verification, canonical memory, recovery", prompt)
         self.assertIn("gen-plan` is available but optional", prompt)
         self.assertIn("GPU Wiki and KernelWiki are intentionally not installed", prompt)
-        self.assertIn("repository_horizon.dev_eval submit", prompt)
+        self.assertIn("profiles/<episode>/public_driver.py", prompt)
+        self.assertNotIn("repository_horizon.dev_eval submit", prompt)
+        self.assertNotIn("repository_horizon.dev_eval profile", prompt)
+        self.assertIn("Do not invoke\n`repository_horizon.dev_eval`", prompt)
         self.assertIn("Mandatory pre-bring-up repository reconnaissance", prompt)
         self.assertIn("repository_horizon.reconnaissance seal", prompt)
         self.assertLess(
@@ -96,6 +103,31 @@ class RepositoryV3Tests(unittest.TestCase):
         self.assertNotIn("<PLAN_GENERATOR>", prompt)
         self.assertNotIn("execute its loop", prompt)
         self.assertNotIn("Invoke the `$gen-plan`", prompt)
+
+    def test_repository_agent_environment_excludes_private_evaluator(self) -> None:
+        campaign = RepositoryCampaign(
+            name="fixture",
+            kernel_demo="reference.py",
+            platform="B300",
+            framework="CuteDSL",
+        )
+        with patch.object(
+            Campaign,
+            "agent_environment",
+            return_value={ATREX_PRIVATE_REFERENCE_ENV: "/private", "KEEP": "yes"},
+        ):
+            environment = campaign.agent_environment()
+        self.assertEqual(environment, {"KEEP": "yes"})
+
+    def test_public_profile_never_materializes_a_private_case_without_capability(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {}, clear=False
+        ):
+            os.environ.pop(ATREX_PRIVATE_REFERENCE_ENV, None)
+            sandbox = runpy.run_path(str(ROOT.parent / "tools" / "sandbox.py"))
+            self.assertIsNone(sandbox["_private_profile_case"](Path(temp), []))
 
     def test_runtime_matches_main_assets_except_wiki(self) -> None:
         manifest = load_manifest(MANIFEST)

@@ -45,23 +45,20 @@ metadata are staged only at the private verification boundary.
 
 ## Execution boundary
 
-All GPU imports, compilation, correctness, benchmarking, and profiling must use the repository
-evaluation command below. It stages the current repository snapshot and privately supplies the
-evaluator workload. Do not run GPU/JIT packages directly on the host, install dependencies, mutate
-the shared gateway, poll jobs manually, or submit an identical evaluation twice.
+All GPU imports, compilation, correctness, benchmarking, and profiling must use the local gateway.
+The coding session has only the public contract: construct representative synthetic cases from
+`agent_problem.json` and keep temporary drivers under ignored `profiles/`. The supervisor alone
+owns exact hidden-shape correctness, measurement, and ABBA promotion. Do not invoke
+`repository_horizon.dev_eval`, request `PROFILE_SHAPE_ID`, read a private profile case, or search
+outside the workspace for evaluator data.
 
 ```bash
-{{DEV_EVAL_COMMAND}}
+{{PUBLIC_DEV_COMMAND}}
 ```
 
-Optional typed profiling is available through:
-
-```bash
-{{PROFILE_COMMAND}} --level sol
-```
-
-Development measurements are evidence only. Final acceptance uses the supervisor's same-allocation
-ABBA verification and complete hidden-shape coverage checks from current main.
+Adapt the explicit allowlist and public driver path as needed. Development measurements are evidence
+only. Final acceptance uses the supervisor's same-allocation ABBA verification and complete
+hidden-shape coverage checks from current main.
 
 ## Engineering loop
 

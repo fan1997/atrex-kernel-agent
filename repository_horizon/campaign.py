@@ -17,6 +17,7 @@ from long_horizon.git_episode import (
 )
 from long_horizon.models import VerificationResult
 from orchestrator.campaign import Campaign
+from orchestrator.constants import ATREX_PRIVATE_REFERENCE_ENV
 
 from .baseline import RepositoryBaselineManager
 from .candidate import RepositoryCandidateContract
@@ -33,6 +34,45 @@ class RepositoryCampaign(Campaign):
     repository_manifest: RepositoryManifest | None = field(
         default=None, repr=False, compare=False
     )
+
+    def agent_environment(self) -> dict[str, str]:
+        """Keep evaluator-owned paths out of repository coding sessions.
+
+        Repository Horizon candidates are checked privately by the supervisor after
+        handoff.  A coding session receives only the public contract and reviewer
+        configuration; it must never inherit the directory that owns exact shapes.
+        """
+        environment = super().agent_environment()
+        environment.pop(ATREX_PRIVATE_REFERENCE_ENV, None)
+        return environment
+
+    def _sandbox_directive(self) -> str:
+        endpoint = (
+            f" using gateway URL `{self.sandbox_url}`"
+            if self.sandbox_url
+            else (
+                f" using gateway profile `{self.sandbox_profile}`"
+                if self.sandbox_profile
+                else " using agate's configured gateway"
+            )
+        )
+        return f"""## GPU sandbox execution (mandatory)
+
+- Target gateway hardware: **{self.sandbox_hardware}**{endpoint}. Every GPU import,
+  compile, correctness check, timer, or profiler must cross this gateway.
+- This coding session has no private-evaluator capability. Exact shapes, release metadata,
+  private evaluator directories, `PROFILE_SHAPE_ID`, and
+  `.atrex_private_profile_case.json` are forbidden. Do not invoke
+  `repository_horizon.dev_eval`; the supervisor owns full hidden-shape verification and
+  same-allocation ABBA promotion after handoff.
+- Build development cases only from `agent_problem.json`. Put temporary public-contract
+  drivers and profiler harnesses under ignored `profiles/`, and submit them with
+  `python tools/sandbox.py --kind dev --hardware {self.sandbox_hardware}` plus the
+  configured endpoint and explicit `--input` allowlist. Development measurements are
+  evidence, never acceptance authority.
+- Never run GPU/JIT packages on the host, install dependencies, mutate or poll the shared
+  gateway, or inspect files outside the workspace for evaluator cases.
+"""
 
     def _link_runtime(self) -> None:
         self._assert_generalized_inputs_are_private()

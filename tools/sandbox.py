@@ -612,6 +612,11 @@ def _private_profile_case(
     workspace: Path, env_items: Iterable[str]
 ) -> tuple[str, bytes] | None:
     """Materialize exactly one private real shape for an ephemeral remote profile."""
+    # Coding sessions deliberately do not inherit the private evaluator path.
+    # Their public-contract profile drivers must remain usable without turning a
+    # missing capability into an implicit request for hidden inputs.
+    if not os.environ.get(PRIVATE_REFERENCE_ENV, "").strip():
+        return None
     private_dir = _private_reference_dir(workspace)
     if private_dir is None:
         return None
