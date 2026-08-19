@@ -98,6 +98,41 @@ def _job_prefix(kind: str) -> str:
     return {"dev": "dv", "eval": "ev", "profile": "pf", "disassemble": "ds"}.get(kind, "jb")
 
 
+def _redacted_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Keep scheduling metadata while dropping staged source/evaluator payloads."""
+    keys = (
+        "spec",
+        "mode",
+        "lock_clocks",
+        "author",
+        "idempotency_key",
+        "recycle",
+        "dev_intent",
+        "dev_note",
+        "options",
+    )
+    return {
+        **{key: request[key] for key in keys if key in request},
+        "_payload_redacted": True,
+    }
+
+
+def _scrub_job_payload(workdir: Path) -> None:
+    """Remove recoverable upload bundles and evaluator-only inputs after a job."""
+    for pattern in (
+        "__atrex_workspace.tar.gz.b64*",
+        "__atrex_bench_runtime.tar.gz.b64*",
+    ):
+        for path in workdir.glob(pattern):
+            path.unlink(missing_ok=True)
+    for path in workdir.rglob(".atrex_private_profile_case.json"):
+        path.unlink(missing_ok=True)
+    private_names = {"shapes.json", "metadata.json", "roofline.json"}
+    for path in workdir.rglob("*"):
+        if path.is_file() and path.name in private_names and "runtime" in path.parts:
+            path.unlink(missing_ok=True)
+
+
 class JobStore:
     """Thread-safe SQLite persistence for the FIFO scheduler."""
 
@@ -110,6 +145,7 @@ class JobStore:
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")
+            self._db.execute("PRAGMA secure_delete=ON")
             self._db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -150,7 +186,19 @@ class JobStore:
                 """,
                 (restart_error, now, now),
             )
+            rows = self._db.execute(
+                "SELECT job_id, request_json FROM jobs WHERE status IN "
+                "('succeeded', 'failed', 'cancelled')"
+            ).fetchall()
+            for row in rows:
+                request = _json_loads(row["request_json"])
+                if isinstance(request, dict) and not request.get("_payload_redacted"):
+                    self._db.execute(
+                        "UPDATE jobs SET request_json=? WHERE job_id=?",
+                        (_json_dumps(_redacted_request(request)), row["job_id"]),
+                    )
             self._db.commit()
+            self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def close(self) -> None:
         with self._lock:
@@ -238,10 +286,15 @@ class JobStore:
             changed = self._db.execute(
                 """
                 UPDATE jobs SET status='running', attempts=attempts+1,
-                    started_at=?, updated_at=?
+                    started_at=?, updated_at=?, request_json=?
                 WHERE job_id=? AND status='queued'
                 """,
-                (now, now, row["job_id"]),
+                (
+                    now,
+                    now,
+                    _json_dumps(_redacted_request(_json_loads(row["request_json"]))),
+                    row["job_id"],
+                ),
             ).rowcount
             self._db.commit()
             if changed != 1:
@@ -284,6 +337,7 @@ class JobStore:
                 ),
             ).rowcount
             self._db.commit()
+            self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             return changed == 1
 
     def cancel(self, job_id: str) -> tuple[dict[str, Any] | None, bool]:
@@ -1126,6 +1180,10 @@ class LocalScheduler:
         finally:
             with self._process_lock:
                 self._processes.pop(job_id, None)
+            try:
+                _scrub_job_payload(workdir)
+            except OSError:
+                pass
             if clock_reset is not None:
                 try:
                     subprocess.run(

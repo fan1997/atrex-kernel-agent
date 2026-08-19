@@ -129,6 +129,42 @@ class RepositoryV3Tests(unittest.TestCase):
             sandbox = runpy.run_path(str(ROOT.parent / "tools" / "sandbox.py"))
             self.assertIsNone(sandbox["_private_profile_case"](Path(temp), []))
 
+    def test_local_gateway_redacts_and_scrubs_staged_payloads(self) -> None:
+        gateway = runpy.run_path(str(ROOT.parent / "tools" / "local_gateway.py"))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = gateway["JobStore"](root / "jobs.db")
+            job, created = store.create(
+                "dev",
+                {
+                    "spec": {"target_hardware": ["local"]},
+                    "files": {"runtime/shapes.json": "private-shape"},
+                    "command": "python repo_abba.py",
+                },
+                "trace",
+            )
+            self.assertTrue(created)
+            claimed = store.claim_next()
+            self.assertEqual(claimed[2]["files"]["runtime/shapes.json"], "private-shape")
+            persisted = store.request(job["job_id"])
+            self.assertTrue(persisted["_payload_redacted"])
+            self.assertNotIn("files", persisted)
+            store.close()
+
+            workdir = root / "workdir"
+            (workdir / "runtime").mkdir(parents=True)
+            (workdir / "runtime" / "shapes.json").write_text("private")
+            (workdir / "runtime" / "metadata.json").write_text("private")
+            (workdir / "keep.txt").write_text("public")
+            (workdir / "__atrex_workspace.tar.gz.b64.part000").write_text("bundle")
+            gateway["_scrub_job_payload"](workdir)
+            self.assertFalse((workdir / "runtime" / "shapes.json").exists())
+            self.assertFalse((workdir / "runtime" / "metadata.json").exists())
+            self.assertFalse(
+                (workdir / "__atrex_workspace.tar.gz.b64.part000").exists()
+            )
+            self.assertTrue((workdir / "keep.txt").is_file())
+
     def test_runtime_matches_main_assets_except_wiki(self) -> None:
         manifest = load_manifest(MANIFEST)
         with tempfile.TemporaryDirectory() as temp:
