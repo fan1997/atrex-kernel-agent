@@ -403,7 +403,22 @@ class SeedAndStagingTests(unittest.TestCase):
             sandbox_profile="",
             sandbox_url="",
             sandbox_timeout=600,
+            optimization_mode="production",
+            agent_cli="claude",
         )
+
+    def test_fresh_seed_initializes_git_before_linking_main_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, revision = make_source(root)
+            manifest = load_manifest(make_manifest(root, revision))
+            campaign = self._campaign_fixture(root)
+
+            seed_workspace(campaign, manifest, source)
+
+            self.assertTrue((campaign.workspace / ".git").is_dir())
+            self.assertEqual(run_git(campaign.workspace, "status", "--porcelain"), "")
+            self.assertTrue((campaign.workspace / "tools").is_symlink())
 
     def test_replay_strict_corpus_contains_only_r0_ancestry(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

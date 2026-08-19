@@ -271,6 +271,11 @@ def seed_workspace(
     (workspace / ".gitignore").write_text(
         "__pycache__/\n*.pyc\n/.repository_horizon_runtime/\n", encoding="utf-8"
     )
+    # Main's runtime setup installs campaign-local Git excludes.  A genuinely fresh
+    # repository workspace therefore has to become a Git repository before linking
+    # that runtime; tests and resumed workspaces may already have hidden this ordering
+    # requirement by arriving pre-initialized.
+    subprocess.run(["git", "init"], cwd=str(workspace), check=True, capture_output=True)
     install_minimal_runtime(campaign, workspace, manifest)
     install_repository_policy(workspace, manifest)
     bringup_enabled = manifest.bringup.mode == "auto"
@@ -307,7 +312,6 @@ def seed_workspace(
             },
         },
     )
-    subprocess.run(["git", "init"], cwd=str(workspace), check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=str(workspace), check=True)
     subprocess.run(
         [
