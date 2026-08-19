@@ -87,6 +87,12 @@ class RepositoryV3Tests(unittest.TestCase):
         self.assertIn("gen-plan` is available but optional", prompt)
         self.assertIn("GPU Wiki and KernelWiki are intentionally not installed", prompt)
         self.assertIn("repository_horizon.dev_eval submit", prompt)
+        self.assertIn("Mandatory pre-bring-up repository reconnaissance", prompt)
+        self.assertIn("repository_horizon.reconnaissance seal", prompt)
+        self.assertLess(
+            prompt.index("Mandatory pre-bring-up repository reconnaissance"),
+            prompt.index("## Execution boundary"),
+        )
         self.assertNotIn("<PLAN_GENERATOR>", prompt)
         self.assertNotIn("execute its loop", prompt)
         self.assertNotIn("Invoke the `$gen-plan`", prompt)

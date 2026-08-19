@@ -12,6 +12,7 @@ from .config import EvaluationPolicy
 from .corpus import CORPUS_RELATIVE, read_catalog
 from .manifest import RepositoryManifest
 from .policy import repository_mode_directive
+from .reconnaissance import reconnaissance_required
 from .runtime import repository_agent_runtime_directive
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "episode.md"
@@ -68,11 +69,39 @@ def render_prompt(
     )
     require_report = ""
     if manifest.repository_search.require_report:
-        require_report = (
-            "Before a bring-up candidate is terminal, create `plans/repository_search.json` "
-            "using the locked bounded corpus. The repository candidate policy validates its "
-            "queries, full commit ids, paths, selection, and stated gap."
-        )
+        if reconnaissance_required(worktree.path, manifest):
+            seal_command = (
+                f"PYTHONPATH={root} python -m repository_horizon.reconnaissance "
+                f"seal --workspace {workspace}"
+            )
+            require_report = (
+                "## Mandatory pre-bring-up repository reconnaissance\n\n"
+                "Before modifying an editable root, making an episode commit, or invoking "
+                "development evaluation/profile, inspect the locked R0 snapshot and its "
+                "bounded source corpus. Use only workspace-local repository evidence; do not "
+                "fetch, clone, or consult remote GitHub/PR material. Search specifically for "
+                "mechanisms relevant to the public workload contract, then write the findings "
+                "best-first to `plans/repository_search.json`. The report uses schema_version "
+                "1, the locked source_revision, non-empty queries, at least "
+                f"{manifest.repository_search.min_candidates} distinct candidates, and one "
+                "selected entry. Every candidate requires `commit`, `path`, `mechanism`, "
+                "`workload_relevance`, `transfer_gap`, and `risks`; selected requires a "
+                "reported `commit`/`path`, `rationale`, and `gap`. This is bounded source "
+                "archaeology, not a mandatory `gen-plan`.\n\n"
+                "Seal the report while HEAD still equals the episode base and editable roots "
+                "are unchanged:\n\n```bash\n"
+                + seal_command
+                + "\n```\n\nDevelopment evaluation rejects the episode until this seal passes. "
+                "After sealing, choose one coherent direction and begin implementation."
+            )
+        else:
+            require_report = (
+                "Before a bring-up candidate is terminal, create "
+                "`plans/repository_search.json` using the locked bounded corpus. "
+                "The repository candidate policy validates its queries, full commit ids, "
+                f"at least {manifest.repository_search.min_candidates} distinct paths, "
+                "selection, and stated gap."
+            )
     prompt = _render(
         PROMPT_PATH.read_text(encoding="utf-8"),
         {

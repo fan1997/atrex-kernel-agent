@@ -21,10 +21,17 @@ from repository_horizon.tests.helpers import init_repo, run_git
 from long_horizon.verifier import verification_schedule
 from repository_horizon.candidate import RepositoryCandidateContract
 from repository_horizon.corpus import CORPUS_RELATIVE, validate_source_corpus
+from repository_horizon.dev_eval import _require_reconnaissance
 from repository_horizon.baseline import RepositoryBaselineManager
 from repository_horizon.manifest import RuntimeSupportWheel, load_manifest
 from repository_horizon.policy import install_repository_policy
 from repository_horizon.repository_profile import _profile_target_python
+from repository_horizon.reconnaissance import (
+    REPORT_RELATIVE,
+    SEAL_RELATIVE,
+    reconnaissance_gate_violations,
+    seal_reconnaissance,
+)
 from repository_horizon.seed import (
     _archive_paths_with_package_boundaries,
     seed_workspace,
@@ -183,10 +190,20 @@ class RepositoryContractTests(unittest.TestCase):
                         "schema_version": 1,
                         "source_revision": revision,
                         "queries": ["HD256 seqused_k page table"],
-                        "candidates": [{"commit": revision, "path": "flash_attn/cute/kernel.py"}],
+                        "candidates": [
+                            {
+                                "commit": revision,
+                                "path": "flash_attn/cute/kernel.py",
+                                "mechanism": "reuse the existing tiled kernel structure",
+                                "workload_relevance": "the public contract uses this path",
+                                "transfer_gap": "paged addressing is not implemented",
+                                "risks": "layout assumptions may not transfer",
+                            }
+                        ],
                         "selected": {
                             "commit": revision,
                             "path": "flash_attn/cute/kernel.py",
+                            "rationale": "closest bounded implementation evidence",
                             "gap": "paged dispatch",
                         },
                     }
@@ -195,19 +212,19 @@ class RepositoryContractTests(unittest.TestCase):
             )
             with (
                 mock.patch(
-                    "repository_horizon.candidate.validate_source_corpus",
+                    "repository_horizon.reconnaissance.validate_source_corpus",
                     return_value=[],
                 ),
                 mock.patch(
-                    "repository_horizon.candidate.corpus_has_commit",
+                    "repository_horizon.reconnaissance.corpus_has_commit",
                     return_value=True,
                 ),
                 mock.patch(
-                    "repository_horizon.candidate.corpus_has_path",
+                    "repository_horizon.reconnaissance.corpus_has_path",
                     return_value=True,
                 ),
                 mock.patch(
-                    "repository_horizon.candidate.read_catalog",
+                    "repository_horizon.reconnaissance.read_catalog",
                     return_value={"schema_version": 1},
                 ),
             ):
@@ -221,6 +238,99 @@ class RepositoryContractTests(unittest.TestCase):
             (workspace / "memory" / "v0.json").write_text("{}\n", encoding="utf-8")
             (workspace / "plans" / "repository_search.json").unlink()
             self.assertEqual(contract.workspace_violations(None, workspace), [])
+
+    def test_clean_reconnaissance_seal_gates_first_bringup_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, revision = make_source(root)
+            manifest = load_manifest(
+                make_manifest(
+                    root,
+                    revision,
+                    repository_search={
+                        "mode": "replay_strict",
+                        "require_report": True,
+                        "seal_before_first_eval": True,
+                        "min_candidates": 1,
+                    },
+                    bringup={"mode": "auto"},
+                )
+            )
+            campaign = SeedAndStagingTests._campaign_fixture(root)
+            with mock.patch("repository_horizon.seed.install_minimal_runtime"):
+                seed_workspace(campaign, manifest, source)
+            workspace = campaign.workspace
+            base = git_head(workspace)
+            runtime = workspace / ".atrex_long_horizon"
+            runtime.mkdir(exist_ok=True)
+            (runtime / "journal.json").write_text(
+                json.dumps({"base_commit": base}), encoding="utf-8"
+            )
+            report = {
+                "schema_version": 1,
+                "source_revision": revision,
+                "queries": ["paged attention history relevant to the public contract"],
+                "candidates": [
+                    {
+                        "commit": revision,
+                        "path": "flash_attn/cute/kernel.py",
+                        "mechanism": "reuse the existing tiled kernel structure",
+                        "workload_relevance": "the public contract enters this kernel",
+                        "transfer_gap": "paged addressing is absent",
+                        "risks": "the historical layout may not transfer",
+                    }
+                ],
+                "selected": {
+                    "commit": revision,
+                    "path": "flash_attn/cute/kernel.py",
+                    "rationale": "closest bounded implementation evidence",
+                    "gap": "add paged addressing without changing the adapter",
+                },
+            }
+            report_path = workspace / REPORT_RELATIVE
+            report_path.parent.mkdir()
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            self.assertTrue(reconnaissance_gate_violations(workspace, manifest))
+            rejecting_parser = mock.Mock()
+            rejecting_parser.error.side_effect = RuntimeError
+            with self.assertRaises(RuntimeError):
+                _require_reconnaissance(rejecting_parser, workspace)
+            self.assertIn(
+                "reconnaissance gate", rejecting_parser.error.call_args.args[0]
+            )
+            seal = seal_reconnaissance(workspace, manifest)
+            self.assertEqual(seal, workspace / SEAL_RELATIVE)
+            self.assertEqual(reconnaissance_gate_violations(workspace, manifest), [])
+            self.assertEqual(
+                RepositoryCandidateContract(manifest).workspace_violations(
+                    campaign, workspace
+                ),
+                [],
+            )
+            accepting_parser = mock.Mock()
+            _require_reconnaissance(accepting_parser, workspace)
+            accepting_parser.error.assert_not_called()
+
+            report["queries"].append("a post-seal report mutation")
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            self.assertIn(
+                "report_sha256",
+                reconnaissance_gate_violations(workspace, manifest)[0],
+            )
+
+            (workspace / SEAL_RELATIVE).unlink()
+            editable = (
+                workspace
+                / "vendor"
+                / "flash_attention"
+                / "flash_attn"
+                / "cute"
+                / "kernel.py"
+            )
+            editable.write_text("VALUE = 2\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "before editable source changes"):
+                seal_reconnaissance(workspace, manifest)
 
     def test_validation_and_promotion_share_repository_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

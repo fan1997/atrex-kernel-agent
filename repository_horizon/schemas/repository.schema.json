@@ -70,7 +70,9 @@
           "type": "array",
           "items": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
         },
-        "require_report": {"type": "boolean"}
+        "require_report": {"type": "boolean"},
+        "seal_before_first_eval": {"type": "boolean", "default": false},
+        "min_candidates": {"type": "integer", "minimum": 1, "default": 1}
       },
       "additionalProperties": false
     },

@@ -14,6 +14,7 @@ from .evaluation import (
 )
 from .manifest import load_manifest
 from .profile_eval import collect_profile, submit_profile
+from .reconnaissance import reconnaissance_gate_violations
 from .transport import get_agate_job, get_local_job
 from .verifier import RepositoryABBAValidator, collect_pending_verification
 
@@ -29,6 +30,15 @@ def _working_changed_paths(workspace: Path, base_commit: str) -> list[str]:
     tracked = _lines(workspace, "diff", "--name-only", base_commit, "--")
     untracked = _lines(workspace, "ls-files", "--others", "--exclude-standard")
     return sorted(set(tracked + untracked))
+
+
+def _require_reconnaissance(
+    parser: argparse.ArgumentParser, workspace: Path
+) -> None:
+    manifest = load_manifest(workspace / "source_manifest.json")
+    violations = reconnaissance_gate_violations(workspace, manifest)
+    if violations:
+        parser.error("repository reconnaissance gate: " + "; ".join(violations))
 
 
 def _verifier(
@@ -81,6 +91,7 @@ def _verifier(
 
 def _submit(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
+    _require_reconnaissance(parser, workspace)
     verifier, base_commit, candidate_commit, paths = _verifier(workspace, args)
     pending = verifier.submit(
         workspace,
@@ -126,6 +137,7 @@ def _collect(args: argparse.Namespace) -> int:
 
 def _profile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
+    _require_reconnaissance(parser, workspace)
     candidate = (workspace / args.candidate).resolve()
     reference_dir = (workspace / args.reference_dir).resolve()
     for path, label in ((candidate, "candidate"), (reference_dir, "reference-dir")):

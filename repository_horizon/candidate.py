@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import json
-import re
 from pathlib import Path
 from typing import Any
 
 from .compat import EVIDENCE_PREFIXES, normalize_relative_path
 
-from .corpus import (
-    CORPUS_RELATIVE,
-    corpus_has_commit,
-    corpus_has_path,
-    read_catalog,
-    validate_source_corpus,
-)
+from .corpus import CORPUS_RELATIVE
 from .manifest import RepositoryManifest
+from .reconnaissance import (
+    reconnaissance_gate_violations,
+    validate_reconnaissance_report,
+)
 
 PROTECTED = frozenset(
     {
@@ -77,77 +73,19 @@ class RepositoryCandidateContract:
             return []
         if (workspace / "memory" / "v0.json").is_file():
             return []
-        report_path = workspace / "plans" / "repository_search.json"
-        try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return ["bring-up candidate requires plans/repository_search.json"]
-        if not isinstance(report, dict) or report.get("schema_version") != 1:
-            return ["repository search report has unsupported schema"]
-        if report.get("source_revision") != self.manifest.revision:
-            return ["repository search report source_revision differs from R0"]
-        queries = report.get("queries")
-        candidates = report.get("candidates")
-        selected = report.get("selected")
-        if (
-            not isinstance(queries, list)
-            or not queries
-            or any(not isinstance(value, str) or not value.strip() for value in queries)
-        ):
-            return ["repository search report must record non-empty queries"]
-        if not isinstance(candidates, list) or not candidates:
-            return ["repository search report must record candidate findings"]
-        if not isinstance(selected, dict) or not selected:
-            return ["repository search report must record the selected source path"]
-        catalog = read_catalog(workspace)
-        if catalog is None:
-            return ["repository search report requires a bounded source corpus"]
-        expected_runtime = Path(campaign.workspace) / CORPUS_RELATIVE
-        corpus_violations = validate_source_corpus(
-            workspace, catalog, expected_runtime=expected_runtime
+        expected_runtime = (
+            Path(campaign.workspace) / CORPUS_RELATIVE
+            if campaign is not None
+            else None
         )
-        if corpus_violations:
-            return corpus_violations
-        reported: set[tuple[str, str]] = set()
-        for index, candidate in enumerate(candidates):
-            if not isinstance(candidate, dict):
-                return [f"repository search candidate {index} must be an object"]
-            commit = candidate.get("commit")
-            path = candidate.get("path")
-            if (
-                not isinstance(commit, str)
-                or re.fullmatch(r"[0-9a-f]{40}", commit) is None
-                or not isinstance(path, str)
-                or not path.strip()
-            ):
-                return [
-                    f"repository search candidate {index} requires full commit and path"
-                ]
-            try:
-                path = normalize_relative_path(path)
-            except ValueError as exc:
-                return [f"repository search candidate {index} has unsafe path: {exc}"]
-            if not corpus_has_commit(workspace, commit):
-                return [
-                    f"repository search candidate commit is outside bounded corpus: {commit}"
-                ]
-            if not corpus_has_path(workspace, commit, path):
-                return [
-                    "repository search candidate path is absent from its corpus commit: "
-                    f"{commit}:{path}"
-                ]
-            reported.add((commit, path))
-        selected_commit = selected.get("commit")
-        selected_path = selected.get("path")
-        selected_gap = selected.get("gap")
-        if (
-            not isinstance(selected_commit, str)
-            or not isinstance(selected_path, str)
-            or (selected_commit, selected_path) not in reported
-            or not isinstance(selected_gap, str)
-            or not selected_gap.strip()
-        ):
-            return [
-                "repository search selected entry must reference a reported commit/path and explain the gap"
-            ]
-        return []
+        if self.manifest.repository_search.seal_before_first_eval:
+            return reconnaissance_gate_violations(
+                workspace,
+                self.manifest,
+                expected_runtime=expected_runtime,
+            )
+        return validate_reconnaissance_report(
+            workspace,
+            self.manifest,
+            expected_runtime=expected_runtime,
+        )

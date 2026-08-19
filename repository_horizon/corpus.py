@@ -222,6 +222,9 @@ def validate_source_corpus(
     corpus = workspace / CORPUS_RELATIVE
     if not corpus.is_dir():
         return ["bounded source corpus is missing"]
+    remotes = _bare(corpus, "remote", check=False)
+    if remotes.returncode != 0 or remotes.stdout.splitlines():
+        violations.append("bounded source corpus must not expose Git remotes")
     if expected_runtime is not None:
         try:
             if corpus.resolve() != expected_runtime.resolve():

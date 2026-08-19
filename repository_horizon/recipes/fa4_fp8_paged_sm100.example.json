@@ -18,7 +18,9 @@
     "excluded_commits": [
       "3e18806fdc32b6731c6f7dc168e062ae7d0497c7"
     ],
-    "require_report": true
+    "require_report": true,
+    "seal_before_first_eval": true,
+    "min_candidates": 3
   },
   "bringup": {
     "mode": "auto",

@@ -30,6 +30,8 @@ Repository-specific behavior remains responsible for:
 
 - immutable source manifests and source locks;
 - bounded source-history corpora;
+- an optional clean reconnaissance seal that gates the first bring-up evaluation before any
+  editable-source change while leaving `gen-plan` optional;
 - manifest-declared editable roots;
 - minimized and locked support wheels;
 - repository-snapshot development evaluation and final ABBA staging.

@@ -41,6 +41,8 @@ metadata are staged only at the private verification boundary.
 
 {{SANDBOX}}
 
+{{REPOSITORY_SEARCH_REQUIREMENT}}
+
 ## Execution boundary
 
 All GPU imports, compilation, correctness, benchmarking, and profiling must use the repository
@@ -60,8 +62,6 @@ Optional typed profiling is available through:
 
 Development measurements are evidence only. Final acceptance uses the supervisor's same-allocation
 ABBA verification and complete hidden-shape coverage checks from current main.
-
-{{REPOSITORY_SEARCH_REQUIREMENT}}
 
 ## Engineering loop
 

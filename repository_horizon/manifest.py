@@ -43,6 +43,8 @@ class RepositorySearchConfig:
     refs: tuple[str, ...] = ()
     excluded_commits: tuple[str, ...] = ()
     require_report: bool = False
+    seal_before_first_eval: bool = False
+    min_candidates: int = 1
 
 
 @dataclass(frozen=True)
@@ -216,6 +218,21 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
         raise ValueError("replay_strict corpus cannot declare sibling refs")
     if search_mode != "allowlist" and search_refs:
         raise ValueError("repository_search.refs requires mode=allowlist")
+    require_report = bool(
+        search_payload.get("require_report", search_mode != "snapshot")
+    )
+    seal_before_first_eval = bool(
+        search_payload.get("seal_before_first_eval", False)
+    )
+    min_candidates = int(search_payload.get("min_candidates", 1))
+    if seal_before_first_eval and not require_report:
+        raise ValueError(
+            "repository_search.seal_before_first_eval requires require_report"
+        )
+    if require_report and search_mode == "snapshot":
+        raise ValueError("repository_search.require_report requires a bounded corpus")
+    if min_candidates <= 0:
+        raise ValueError("repository_search.min_candidates must be positive")
     repository_search = RepositorySearchConfig(
         mode=search_mode,
         refs=search_refs,
@@ -223,9 +240,9 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
             search_payload.get("excluded_commits"),
             "repository_search.excluded_commits",
         ),
-        require_report=bool(
-            search_payload.get("require_report", search_mode != "snapshot")
-        ),
+        require_report=require_report,
+        seal_before_first_eval=seal_before_first_eval,
+        min_candidates=min_candidates,
     )
     bringup_payload = payload.get("bringup") or {}
     if not isinstance(bringup_payload, dict):
