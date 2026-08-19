@@ -12,10 +12,9 @@ context_files=()
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 codex_timeout="${ATREX_ASK_CODEX_TIMEOUT:-600}"
 session_file="${ATREX_CODEX_REVIEW_SESSION_FILE:-}"
-# Independent plan review is always run at maximum reasoning depth. Do not inherit the episode,
-# project, environment, or caller effort because that would weaken the review when the main agent
-# is configured for a faster setting.
-reasoning_effort="max"
+# Independent plan review defaults to maximum reasoning depth. Campaigns may pin a different
+# supported effort explicitly; it is never inherited implicitly from the episode or caller.
+reasoning_effort="${ATREX_ASK_CODEX_REASONING_EFFORT:-max}"
 codex_model="${ATREX_ASK_CODEX_MODEL:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -59,6 +58,13 @@ if [[ -n "$codex_model" && ! "$codex_model" =~ ^[a-zA-Z0-9._-]+$ ]]; then
     echo "ask-codex: ATREX_ASK_CODEX_MODEL contains invalid characters" >&2
     exit 2
 fi
+case "$reasoning_effort" in
+    low|medium|high|xhigh|max) ;;
+    *)
+        echo "ask-codex: ATREX_ASK_CODEX_REASONING_EFFORT must be one of: low, medium, high, xhigh, max" >&2
+        exit 2
+        ;;
+esac
 
 if [[ ! -f "$input_file" || ! -s "$input_file" ]]; then
     echo "ask-codex: input draft is missing or empty: $input_file" >&2

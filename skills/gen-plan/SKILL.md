@@ -93,8 +93,10 @@ bash skills/gen-plan/scripts/ask-reviewers.sh \
 
 Add other `--context` arguments only when they materially affect the plan. The helper starts the
 applicable external reviewers concurrently so neither can see or anchor on the other's response.
-Both external reviewer processes always use maximum reasoning effort; episode/session settings,
-reviewer effort environment variables, and legacy `--reasoning-effort` arguments cannot lower it.
+Both external reviewer processes default to maximum reasoning effort; episode/session settings and
+legacy `--reasoning-effort` arguments cannot lower it. A campaign may explicitly pin Codex with
+`ATREX_ASK_CODEX_REASONING_EFFORT` to `low`, `medium`, `high`, `xhigh`, or `max`; Qoder remains
+fixed at `max`.
 By default each external review is ephemeral. `--long-reviewer-session codex` resumes one
 campaign-private, read-only Codex thread across episodes while continuing to send the complete
 current draft and bounded context on every call. Long Qoder and Claude reviewer sessions are not
