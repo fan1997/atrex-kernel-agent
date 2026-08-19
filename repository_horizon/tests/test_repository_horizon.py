@@ -39,7 +39,9 @@ from repository_horizon.seed import (
 from repository_horizon.staging import build_abba_stage
 from repository_horizon.support_wheel import extract_support_wheel
 from repository_horizon.transport import (
+    AgateJobSnapshot,
     _payload,
+    collect_agate_dev,
     get_agate_job,
     submit_agate_dev,
     submit_local_dev,
@@ -707,6 +709,52 @@ class SeedAndStagingTests(unittest.TestCase):
         self.assertIn("--no-wait", command)
         self.assertNotIn("--wait-timeout", command)
         self.assertNotIn("--wait", command)
+
+    def test_local_agate_development_honors_pinned_python(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"job_id":"job-123456789012","status":"queued"}\n',
+            stderr="",
+        )
+        with mock.patch.dict(
+            "repository_horizon.transport.os.environ",
+            {"ATREX_LOCAL_PYTHON": "/runtime/venv/bin/python"},
+        ), mock.patch(
+            "repository_horizon.transport.subprocess.run", return_value=completed
+        ) as run:
+            submit_agate_dev(
+                Path("/tmp/stage"),
+                hardware="local",
+                profile="",
+                url="http://127.0.0.1:8004",
+                job_timeout=600,
+            )
+        self.assertEqual(
+            run.call_args.args[0][-1], "/runtime/venv/bin/python repo_abba.py"
+        )
+
+    def test_agate_success_without_legacy_command_ok_is_accepted(self) -> None:
+        payload = {"schema_version": 1, "runs": [], "error": None}
+        snapshot = AgateJobSnapshot(
+            job_id="job-123456789012",
+            status="succeeded",
+            response={
+                "job_id": "job-123456789012",
+                "status": "succeeded",
+                "error": None,
+                "result": {
+                    "exit_code": 0,
+                    "stdout": "__ATREX_LONG_HORIZON_ABBA_RESULT__="
+                    + json.dumps(payload),
+                    "stderr": "",
+                },
+            },
+            stdout="",
+            stderr="",
+            command=("agate", "get"),
+        )
+        self.assertEqual(collect_agate_dev(snapshot).payload, payload)
 
     def test_local_development_uses_supervisor_python(self) -> None:
         process = mock.Mock(pid=12345)

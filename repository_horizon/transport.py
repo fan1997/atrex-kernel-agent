@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .config import endpoint_is_local
 
 ABBA_PREFIX = "__ATREX_LONG_HORIZON_ABBA_RESULT__="
 TERMINAL_JOB_STATUSES = frozenset({"succeeded", "failed", "cancelled", "timed_out"})
@@ -234,6 +237,12 @@ def submit_agate_dev(
     intent: str = "custom_harness",
     note: str = "repository horizon same-allocation ABBA verification",
 ) -> PendingAgateJob:
+    local_python = os.environ.get("ATREX_LOCAL_PYTHON", "")
+    if local_python and endpoint_is_local(url, hardware):
+        parsed = shlex.split(remote_command)
+        if parsed and parsed[0] in {"python", "python3"}:
+            parsed[0] = local_python
+            remote_command = shlex.join(parsed)
     command = ["agate", "dev", *_endpoint_args(profile=profile, url=url)]
     command += [
         "--gpu",
@@ -365,7 +374,7 @@ def collect_agate_dev(snapshot: AgateJobSnapshot) -> AgateDevResult:
     if (
         response.get("status") != "succeeded"
         or response.get("error")
-        or response.get("command_ok") is not True
+        or response.get("command_ok") is False
         or result.get("exit_code") != 0
     ):
         raise RuntimeError(
