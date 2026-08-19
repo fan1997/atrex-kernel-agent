@@ -61,6 +61,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -173,6 +174,18 @@ CANDIDATE_RUNTIME_INPUT_PATHS = frozenset(
         "workload.jsonl",
     }
 )
+
+
+def _is_loopback_gateway(url: str) -> bool:
+    """Return whether an explicit gateway URL targets this host."""
+    if not url:
+        return False
+    try:
+        return urlparse(url).hostname in {"127.0.0.1", "::1", "localhost"}
+    except ValueError:
+        return False
+
+
 NVIDIA_PROFILE_TOOL_INPUT_PATHS = frozenset(
     {
         "tools/profile_nvidia.sh",
@@ -2477,8 +2490,13 @@ def _main(argv: list[str] | None = None) -> int:
             command = shlex.join(["env", *command_environment]) + " " + command
     agate_executable = _find_agate()
     direct_http = bool(args.url and agate_executable is None)
+    # The community localhost gateway supports chunked --file uploads but has no
+    # OSS attachment backend. Keep large loopback bundles on the ordinary HTTP
+    # upload path even when the Agate CLI is installed.
     oss_workspace = bool(
-        agate_executable and bundle_bytes > OSS_WORKSPACE_THRESHOLD_BYTES
+        agate_executable
+        and bundle_bytes > OSS_WORKSPACE_THRESHOLD_BYTES
+        and not _is_loopback_gateway(args.url)
     )
     workspace_transport = (
         "oss" if oss_workspace else ("http" if direct_http else "inline")
