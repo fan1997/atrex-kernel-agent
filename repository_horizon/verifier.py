@@ -10,7 +10,6 @@ from pathlib import Path
 from long_horizon.models import VerificationResult, VerificationRun
 from long_horizon.protocol import atomic_write_json
 from long_horizon.verifier import score_verification_payload, verification_schedule
-from orchestrator.workspace_state import latest_version, read_memory
 
 from .evaluation import (
     PendingVerification,
@@ -39,6 +38,24 @@ def _evaluation_runtime_root(workspace: Path) -> Path:
         resolved.parent
         / ".repository_horizon_evaluations"
         / f"{resolved.name}-{digest}"
+    )
+
+
+def has_measured_v0(workspace: Path) -> bool:
+    """Return whether repository bring-up has produced canonical V0.
+
+    Later non-promotion memories (for example an interrupted episode) must not
+    put the campaign back into candidate-only bring-up verification.  V0 is the
+    durable phase boundary; subsequent candidates require normal ABBA.
+    """
+    path = workspace / "memory" / "v0.json"
+    try:
+        memory = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return (
+        isinstance(memory, dict)
+        and (memory.get("quality_gate") or {}).get("result") == "PASS"
     )
 
 
@@ -471,13 +488,7 @@ class RepositoryPhaseValidator:
         self.bringup = bringup
 
     def _validator(self, workspace: Path) -> RepositoryABBAValidator:
-        version = latest_version(workspace)
-        memory = read_memory(workspace, version) if version >= 0 else None
-        passed = (
-            isinstance(memory, dict)
-            and (memory.get("quality_gate") or {}).get("result") == "PASS"
-        )
-        return self.normal if passed else self.bringup
+        return self.normal if has_measured_v0(workspace) else self.bringup
 
     def submit(self, workspace: Path, **kwargs) -> PendingVerification:
         return self._validator(workspace).submit(workspace, **kwargs)

@@ -16,7 +16,11 @@ from .manifest import load_manifest
 from .profile_eval import collect_profile, submit_profile
 from .reconnaissance import reconnaissance_gate_violations
 from .transport import get_agate_job, get_local_job
-from .verifier import RepositoryABBAValidator, collect_pending_verification
+from .verifier import (
+    RepositoryABBAValidator,
+    collect_pending_verification,
+    has_measured_v0,
+)
 
 
 def _lines(workspace: Path, *args: str) -> list[str]:
@@ -52,15 +56,12 @@ def _verifier(
     paths = _working_changed_paths(workspace, base_commit)
     manifest = load_manifest(workspace / "source_manifest.json")
     lock = json.loads((workspace / "source.lock.json").read_text(encoding="utf-8"))
-    from orchestrator.workspace_state import latest_version, read_memory
-
-    version = latest_version(workspace)
-    memory = read_memory(workspace, version) if version >= 0 else None
-    bringup = not (
-        isinstance(memory, dict)
-        and (memory.get("quality_gate") or {}).get("result") == "PASS"
+    bringup = not has_measured_v0(workspace)
+    repeats = (
+        manifest.bringup.probe_repeats
+        if bringup
+        else manifest.measurement.repeats
     )
-    repeats = manifest.bringup.probe_repeats if bringup else 1
     schedule_runs = repeats if bringup else repeats * 2
     per_run_timeout = max(1, (600 - 30) // schedule_runs)
     verifier = RepositoryABBAValidator(

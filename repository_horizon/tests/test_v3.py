@@ -28,21 +28,110 @@ from repository_horizon.campaign import (
 )
 from repository_horizon.compat import assert_upstream_compatible
 from repository_horizon.config import EvaluationPolicy
+from repository_horizon.dev_eval import _verifier as make_dev_verifier
 from repository_horizon.manifest import load_manifest
 from repository_horizon.prompt import MAX_PROMPT_BYTES, render_prompt
 from repository_horizon.runtime import link_repository_runtime
 from repository_horizon.staging import build_abba_stage
 from repository_horizon.tests.helpers import init_repo, run_git
 from repository_horizon.verifier import (
+    RepositoryPhaseValidator,
     _evaluation_runtime_root,
     _remove_private_stage_inputs,
     _require_complete_shape_coverage,
+    has_measured_v0,
 )
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "recipes" / "fa4_fp8_paged_sm100.example.json"
 
 
 class RepositoryV3Tests(unittest.TestCase):
+    def test_measured_v0_keeps_normal_abba_after_interrupted_memory(self) -> None:
+        normal = object()
+        bringup = object()
+        validator = RepositoryPhaseValidator(normal, bringup)
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            memory = workspace / "memory"
+            memory.mkdir()
+            (memory / "v0.json").write_text(
+                json.dumps({"quality_gate": {"result": "PASS"}}) + "\n",
+                encoding="utf-8",
+            )
+            (memory / "v1.json").write_text(
+                json.dumps(
+                    {
+                        "quality_gate": {"result": "FAIL"},
+                        "long_horizon": {"status": "interrupted"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(has_measured_v0(workspace))
+            self.assertIs(validator._validator(workspace), normal)
+
+            (memory / "v0.json").write_text(
+                json.dumps({"quality_gate": {"result": "BRINGUP_REQUIRED"}})
+                + "\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(has_measured_v0(workspace))
+            self.assertIs(validator._validator(workspace), bringup)
+
+    def test_dev_eval_uses_manifest_abba_after_measured_v0(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            base_commit = init_repo(workspace)
+            memory = workspace / "memory"
+            memory.mkdir()
+            (memory / "v0.json").write_text(
+                json.dumps({"quality_gate": {"result": "PASS"}}) + "\n",
+                encoding="utf-8",
+            )
+            (memory / "v1.json").write_text(
+                json.dumps(
+                    {
+                        "quality_gate": {"result": "FAIL"},
+                        "long_horizon": {"status": "interrupted"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (workspace / "source_manifest.json").write_text(
+                MANIFEST.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (workspace / "source.lock.json").write_text(
+                json.dumps({"atrex_bench_root": str(workspace)}) + "\n",
+                encoding="utf-8",
+            )
+            journal_dir = workspace / ".atrex_long_horizon"
+            journal_dir.mkdir()
+            (journal_dir / "journal.json").write_text(
+                json.dumps({"base_commit": base_commit}) + "\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                hardware="local",
+                profile="",
+                url="http://127.0.0.1:8004",
+                backend="agate",
+                wait_mode="inline",
+                wait_timeout=14_400,
+                agent_result_max_bytes=16 * 1024,
+            )
+            verifier, resolved_base, candidate, paths = make_dev_verifier(
+                workspace, args
+            )
+            manifest = load_manifest(MANIFEST)
+            self.assertEqual(resolved_base, base_commit)
+            self.assertEqual(candidate, base_commit)
+            self.assertIn("memory/v0.json", paths)
+            self.assertFalse(verifier.candidate_only)
+            self.assertEqual(verifier.repeats, manifest.measurement.repeats)
+            self.assertEqual(verifier.min_improvement_pct, 1.0)
+
     def test_v3_is_a_thin_current_main_extension(self) -> None:
         assert_upstream_compatible()
         self.assertTrue(issubclass(RepositoryHorizonCampaign, LongHorizonCampaign))
