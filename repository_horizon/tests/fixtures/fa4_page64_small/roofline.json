@@ -1,0 +1,10 @@
+{
+  "shapes": {
+    "0": {
+      "semantic_W_flops": {"fp8_e4m3": 67108864},
+      "semantic_Q_read_bytes": 196608,
+      "semantic_Q_write_bytes": 524288,
+      "SOL_time_ms": {"NVIDIA B300 (SM100)": 0.001}
+    }
+  }
+}
