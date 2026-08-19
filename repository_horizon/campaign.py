@@ -74,6 +74,20 @@ class RepositoryCampaign(Campaign):
   gateway, or inspect files outside the workspace for evaluator cases.
 """
 
+    def _production_kernel_violations(
+        self,
+        workspace: Path | None = None,
+        *,
+        require_gluon: bool = False,
+    ) -> list[str]:
+        """Use the locked repository contract during main's resume validation."""
+        del require_gluon
+        if self.repository_manifest is None:
+            return ["repository campaign has no source manifest"]
+        return RepositoryCandidateContract(
+            self.repository_manifest
+        ).workspace_violations(self, workspace or self.workspace)
+
     def _link_runtime(self) -> None:
         self._assert_generalized_inputs_are_private()
         if self.repository_manifest is None:

@@ -119,6 +119,24 @@ class RepositoryV3Tests(unittest.TestCase):
             environment = campaign.agent_environment()
         self.assertEqual(environment, {"KEEP": "yes"})
 
+    def test_repository_resume_uses_repository_candidate_policy(self) -> None:
+        manifest = load_manifest(MANIFEST)
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            (workspace / "memory").mkdir()
+            (workspace / "memory" / "v0.json").write_text("{}\n")
+            campaign = RepositoryCampaign(
+                name="fixture",
+                kernel_demo=str(workspace / "reference.py"),
+                platform="B300",
+                framework="CuteDSL",
+                work_dir=str(workspace.parent),
+                repository_manifest=manifest,
+            )
+            self.assertEqual(
+                campaign._production_kernel_violations(workspace), []
+            )
+
     def test_public_profile_never_materializes_a_private_case_without_capability(
         self,
     ) -> None:
