@@ -129,7 +129,10 @@ def _scrub_job_payload(workdir: Path) -> None:
         path.unlink(missing_ok=True)
     private_names = {"shapes.json", "metadata.json", "roofline.json"}
     for path in workdir.rglob("*"):
-        if path.is_file() and path.name in private_names and "runtime" in path.parts:
+        staged_private_tree = any(
+            part in {"runtime", ".runs", "reference"} for part in path.parts
+        )
+        if path.is_file() and path.name in private_names and staged_private_tree:
             path.unlink(missing_ok=True)
 
 

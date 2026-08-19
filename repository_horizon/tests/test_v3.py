@@ -262,11 +262,21 @@ class RepositoryV3Tests(unittest.TestCase):
             (workdir / "runtime").mkdir(parents=True)
             (workdir / "runtime" / "shapes.json").write_text("private")
             (workdir / "runtime" / "metadata.json").write_text("private")
+            (workdir / ".runs" / "00_candidate_0").mkdir(parents=True)
+            (workdir / ".runs" / "00_candidate_0" / "shapes.json").write_text(
+                "private"
+            )
+            (workdir / "reference").mkdir()
+            (workdir / "reference" / "roofline.json").write_text("private")
             (workdir / "keep.txt").write_text("public")
             (workdir / "__atrex_workspace.tar.gz.b64.part000").write_text("bundle")
             gateway["_scrub_job_payload"](workdir)
             self.assertFalse((workdir / "runtime" / "shapes.json").exists())
             self.assertFalse((workdir / "runtime" / "metadata.json").exists())
+            self.assertFalse(
+                (workdir / ".runs" / "00_candidate_0" / "shapes.json").exists()
+            )
+            self.assertFalse((workdir / "reference" / "roofline.json").exists())
             self.assertFalse(
                 (workdir / "__atrex_workspace.tar.gz.b64.part000").exists()
             )
