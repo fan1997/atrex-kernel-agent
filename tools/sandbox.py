@@ -2179,7 +2179,10 @@ def _run_typed_gateway(
                 batch_request = (
                     _shape_batch_request(request, shape_ids) if batched else request
                 )
-                if args.url and agate_executable is None:
+                # An explicit URL is already a fully resolved gateway endpoint.
+                # Submit the request we built directly so an installed agate
+                # client cannot re-materialize it with a different schema.
+                if args.url:
                     return _run_direct_job(
                         url=args.url,
                         kind="eval" if kind == "run" else kind,
