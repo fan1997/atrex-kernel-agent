@@ -343,6 +343,25 @@ class LongHorizonCampaign:
         """Install the current main runtime assets for one isolated episode."""
         main_adapter.link_episode_runtime(self.base_campaign, workspace)
 
+    def _prepare_episode_worktree(
+        self, worktree: EpisodeWorktree, state: SupervisorState
+    ) -> None:
+        """Optional specialization hook after a clean episode runtime is linked."""
+        del worktree, state
+
+    def _after_episode_recorded(
+        self,
+        *,
+        worktree: EpisodeWorktree,
+        state: SupervisorState,
+        result: SessionResult,
+        journal: dict[str, Any],
+        attempt: dict[str, Any],
+        accepted: bool,
+    ) -> None:
+        """Optional specialization hook before the isolated worktree is removed."""
+        del worktree, state, result, journal, attempt, accepted
+
     def _validate_candidate(
         self, worktree: EpisodeWorktree, candidate_commit: str
     ) -> tuple[str, list[str]]:
@@ -1043,6 +1062,7 @@ class LongHorizonCampaign:
                     "runtime linking dirtied the episode boundary: "
                     + ", ".join(unexpected)
                 )
+            self._prepare_episode_worktree(worktree, state)
             runtime = worktree.path / RUNTIME_DIR
             journal_path = runtime / "journal.json"
             handoff_path = runtime / "handoff.json"
@@ -1288,6 +1308,14 @@ class LongHorizonCampaign:
                 )
             store.archive_attempt(episode, attempt)
             state.attempts.append(attempt)
+            self._after_episode_recorded(
+                worktree=worktree,
+                state=state,
+                result=result,
+                journal=journal,
+                attempt=attempt,
+                accepted=accepted,
+            )
             store.save_state(state)
             worktree.remove(self.workspace)
             store.clear_active()

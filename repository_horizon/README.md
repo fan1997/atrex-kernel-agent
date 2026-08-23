@@ -1,6 +1,6 @@
-# Repository Horizon v3
+# Repository Horizon v4
 
-Repository Horizon v3 optimizes a locked source-repository snapshot while delegating the campaign
+Repository Horizon v4 optimizes a locked source-repository snapshot while delegating the campaign
 state machine to the current `main` Long Horizon implementation.
 
 ## Design contract
@@ -10,6 +10,9 @@ V3 intentionally differs from `main` in only two workflow choices:
 1. GPU Wiki and KernelWiki are not linked or installed in the campaign runtime.
 2. `gen-plan` remains available as a normal repository-local skill, but neither the episode prompt
    nor the supervisor requires it. Planning, profiling, and research are optional engineering tools.
+3. Stagnation never stops a repository campaign. It activates a bounded architecture-escape mode
+   that re-audits R0/source-history directions, distinguishes implementation failures from valid
+   architecture refutations, and can carry a committed WIP patch across episodes.
 
 Everything below is owned by current `main`:
 
@@ -23,7 +26,7 @@ Everything below is owned by current `main`:
 - complete hidden-shape coverage checks.
 
 `RepositoryHorizonCampaign` subclasses `long_horizon.campaign.LongHorizonCampaign` and does not
-override `run()`. The small hooks in main are behavior-preserving defaults and allow v3 to replace
+override `run()`. The small hooks in main are behavior-preserving defaults and allow v4 to replace
 only runtime linking, candidate path validation, verification staging, and prompt rendering.
 
 Repository-specific behavior remains responsible for:
@@ -82,9 +85,28 @@ The suite covers the main inheritance boundary, Wiki-free runtime, optional plan
 manifest candidate contract, private shape staging, per-run hidden-shape completeness, source
 corpus integrity, support-wheel locking, and transport behavior.
 
-## V2 migration
+## Architecture escape
+
+`--architecture-escape-after` controls the consecutive-unpromoted trigger (default 5),
+`--architecture-review-interval` prevents ordinary or host-only promotions from indefinitely
+postponing a first-principles review (default 8), and `--architecture-commitment-episodes` protects
+an architecture direction from premature performance rejection (default 3). In repository mode,
+the legacy `--max-stall` option is an alias for the escape trigger and never stops the campaign.
+
+Architecture episodes maintain supervisor-owned state under
+`.repository_horizon_runtime/strategy_state.json`. They require a generic
+`plans/architecture_map.json`; a non-promotable but valuable checkpoint can be committed and handed
+off as `last_trial_commit`, whose full patch is restored into the next architecture episode. A
+permanent architecture refutation requires feature parity, at least two materially different
+implementations, and a completed independent review. Unavailable review yields suspension, not
+refutation.
+
+## V2/V3 migration
 
 V2 workspaces should not be resumed in place. V3 changes the supervisor and canonical-memory
 semantics to current main, removes the old `iter_timeout` and custom suspended-session runner, and
 keeps exact production cases private. Start a new v3 workspace from the same immutable source
 manifest and revision; retain the v2 workspace only as replay evidence.
+
+V3 workspaces remain readable, but a clean v4 workspace is recommended so the initial architecture
+map and stagnation counters are not inferred from a campaign that used the older refutation rules.

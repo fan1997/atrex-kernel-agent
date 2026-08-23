@@ -1,4 +1,4 @@
-# Repository Horizon v3 episode {{EPISODE}}
+# Repository Horizon v4 episode {{EPISODE}}
 
 Own one complete engineering direction in this isolated Git worktree. Continue through as many
 inspection, edit, compile, correctness, benchmark, profile, and repair cycles as the direction
@@ -42,6 +42,8 @@ metadata are staged only at the private verification boundary.
 {{SANDBOX}}
 
 {{REPOSITORY_SEARCH_REQUIREMENT}}
+
+{{STRATEGY_DIRECTIVE}}
 
 ## Execution boundary
 

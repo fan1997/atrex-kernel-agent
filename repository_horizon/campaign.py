@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import asdict, dataclass, field
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from long_horizon import main_adapter
@@ -15,6 +16,7 @@ from long_horizon.git_episode import (
     git_text,
     working_changes,
 )
+from long_horizon.journal import load as load_journal
 from long_horizon.models import VerificationResult
 from orchestrator.campaign import Campaign
 from orchestrator.constants import ATREX_PRIVATE_REFERENCE_ENV
@@ -25,6 +27,13 @@ from .config import EvaluationPolicy
 from .manifest import RepositoryManifest
 from .prompt import render_prompt
 from .runtime import link_repository_runtime
+from .strategy import (
+    ARCHITECTURE_MAP_WORKTREE_PATH,
+    RepositoryStrategyStore,
+    load_architecture_map,
+    render_strategy_directive,
+    validate_architecture_outcome,
+)
 
 
 @dataclass
@@ -110,6 +119,9 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
     evaluation_policy: EvaluationPolicy = field(
         default_factory=lambda: EvaluationPolicy(wait_mode="inline")
     )
+    architecture_escape_after: int = 5
+    architecture_review_interval: int = 8
+    architecture_commitment_episodes: int = 3
 
     @property
     def repository_manifest(self) -> RepositoryManifest:
@@ -144,6 +156,22 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
     def _link_episode_runtime(self, workspace: Path) -> None:
         link_repository_runtime(self.base_campaign, workspace, self.repository_manifest)
 
+    @property
+    def strategy_store(self) -> RepositoryStrategyStore:
+        return RepositoryStrategyStore(self.workspace)
+
+    def _prepare_episode_worktree(self, worktree: EpisodeWorktree, state) -> None:
+        strategy = self.strategy_store.enter_if_needed(
+            episode=worktree.episode,
+            consecutive_without_promotion=state.consecutive_without_promotion,
+            escape_after=self.architecture_escape_after,
+            review_interval=self.architecture_review_interval,
+            commitment_episodes=self.architecture_commitment_episodes,
+        )
+        wip_applied = self.strategy_store.apply_wip(worktree.path, strategy)
+        self.strategy_store.stage_runtime_snapshot(worktree.path)
+        self._strategy_episode_context = (strategy, wip_applied)
+
     def _prompt(
         self,
         *,
@@ -159,6 +187,11 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             raise RuntimeError(
                 "repository horizon does not support main's Triton-to-Gluon conversion latch"
             )
+        strategy, wip_applied = getattr(
+            self,
+            "_strategy_episode_context",
+            (self.strategy_store.load(), False),
+        )
         return render_prompt(
             campaign=self.base_campaign,
             manifest=self.repository_manifest,
@@ -169,7 +202,149 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             handoff_path=handoff_path,
             live_memory_path=live_memory_path,
             evaluation_policy=self.evaluation_policy,
+            strategy_directive=render_strategy_directive(
+                strategy,
+                escape_after=self.architecture_escape_after,
+                review_interval=self.architecture_review_interval,
+                commitment_episodes=self.architecture_commitment_episodes,
+                wip_applied=wip_applied,
+            ),
         )
+
+    def _completion_check(
+        self, worktree: EpisodeWorktree, journal_path: Path, handoff
+    ) -> str:
+        diagnosis = super()._completion_check(worktree, journal_path, handoff)
+        if diagnosis:
+            return diagnosis
+        strategy = self.strategy_store.load()
+        if strategy.mode != "architecture":
+            return ""
+        architecture_map, diagnosis = load_architecture_map(
+            worktree.path / ARCHITECTURE_MAP_WORKTREE_PATH
+        )
+        if diagnosis:
+            return diagnosis
+        try:
+            journal = load_journal(journal_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return f"cannot validate architecture outcome: {exc}"
+        diagnosis = validate_architecture_outcome(
+            journal.get("outcome"),
+            terminal_status=handoff.status,
+            has_last_trial_commit=bool(handoff.last_trial_commit),
+        )
+        if diagnosis:
+            return diagnosis
+        selected = architecture_map.get("selected_direction_id")
+        actual = journal["outcome"]["architecture"]["direction_id"]
+        if selected != actual:
+            return "architecture outcome direction_id must match architecture map selection"
+        architecture = journal["outcome"]["architecture"]
+        if architecture.get("disposition") == "architecture_refuted":
+            evidence = architecture["independent_review"].get("evidence")
+            if not isinstance(evidence, str) or not evidence.strip():
+                return "architecture refutation requires independent review evidence"
+            relative = PurePosixPath(evidence)
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or not relative.as_posix().startswith("plans/")
+                or not (worktree.path / relative).is_file()
+            ):
+                return "architecture review evidence must be an existing plans/ file"
+        if handoff.last_trial_commit:
+            violation, _ = self._validate_candidate(worktree, handoff.last_trial_commit)
+            if violation:
+                return "invalid architecture last_trial_commit: " + violation
+        return ""
+
+    def _after_episode_recorded(
+        self,
+        *,
+        worktree: EpisodeWorktree,
+        state,
+        result,
+        journal: dict[str, Any],
+        attempt: dict[str, Any],
+        accepted: bool,
+    ) -> None:
+        del attempt
+        store = self.strategy_store
+        strategy = store.load()
+        if strategy.mode != "architecture":
+            return
+        architecture_map, diagnosis = load_architecture_map(
+            worktree.path / ARCHITECTURE_MAP_WORKTREE_PATH
+        )
+        if architecture_map is not None and not diagnosis:
+            from long_horizon.protocol import atomic_write_json
+
+            atomic_write_json(store.architecture_map_path, architecture_map)
+        outcome = journal.get("outcome") if isinstance(journal, dict) else None
+        architecture = (
+            outcome.get("architecture") if isinstance(outcome, dict) else None
+        )
+        if not isinstance(architecture, dict):
+            return
+        strategy.active_direction_id = str(architecture.get("direction_id", ""))
+        strategy.active_thesis = str(architecture.get("thesis", ""))
+        strategy.commitment_remaining = max(0, strategy.commitment_remaining - 1)
+        disposition = str(architecture.get("disposition", ""))
+        strategy.history.append(
+            {
+                "event": "architecture_episode_recorded",
+                "episode": worktree.episode,
+                "direction_id": strategy.active_direction_id,
+                "disposition": disposition,
+                "accepted": accepted,
+            }
+        )
+        last_trial = result.handoff.last_trial_commit if result.handoff else ""
+        checkpoint = last_trial or (
+            result.handoff.candidate_commit
+            if result.handoff
+            and result.handoff.status == "candidate_ready"
+            and not accepted
+            else ""
+        )
+        if checkpoint:
+            completed = subprocess.run(
+                ["git", "diff", "--binary", worktree.base_commit, checkpoint, "--"],
+                cwd=str(worktree.path),
+                capture_output=True,
+                check=True,
+            )
+            temporary = store.wip_patch_path.with_suffix(".patch.tmp")
+            temporary.write_bytes(completed.stdout)
+            temporary.replace(store.wip_patch_path)
+            strategy.wip_base_commit = worktree.base_commit
+            strategy.wip_source_commit = checkpoint
+            strategy.wip_patch_sha256 = hashlib.sha256(completed.stdout).hexdigest()
+        elif disposition in {
+            "implementation_refuted",
+            "suspend",
+            "architecture_refuted",
+        }:
+            store.wip_patch_path.unlink(missing_ok=True)
+            strategy.wip_base_commit = ""
+            strategy.wip_source_commit = ""
+            strategy.wip_patch_sha256 = ""
+        if accepted or disposition in {"suspend", "architecture_refuted"}:
+            strategy.mode = "normal"
+            strategy.last_review_episode = worktree.episode
+            strategy.entered_episode = None
+            strategy.commitment_remaining = 0
+            strategy.review_required = False
+            if accepted or disposition == "promote":
+                store.wip_patch_path.unlink(missing_ok=True)
+        elif disposition == "implementation_refuted":
+            strategy.active_direction_id = ""
+            strategy.active_thesis = ""
+            strategy.review_required = strategy.commitment_remaining == 0
+        elif strategy.commitment_remaining == 0:
+            strategy.review_required = True
+        store.save(strategy)
 
     def _validate_candidate(
         self, worktree: EpisodeWorktree, candidate_commit: str
@@ -239,7 +414,9 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
                 shutil.rmtree(destination)
             shutil.copytree(source, destination, symlinks=True)
 
-    def _repository_memory(self, memory: dict[str, Any]) -> dict[str, Any]:
+    def _repository_memory(
+        self, memory: dict[str, Any], journal: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         memory["repository_source"] = {
             "name": self.repository_manifest.source_name,
             "revision": self.repository_manifest.revision,
@@ -250,6 +427,14 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
                 "timed_runs": self.repository_manifest.measurement.timed_runs,
             },
         }
+        strategy = self.strategy_store.load()
+        memory["repository_strategy"] = {
+            **asdict(strategy),
+            "wip_patch_present": self.strategy_store.wip_patch_path.is_file(),
+        }
+        outcome = journal.get("outcome") if isinstance(journal, dict) else None
+        if isinstance(outcome, dict) and isinstance(outcome.get("architecture"), dict):
+            memory["architecture_episode"] = outcome["architecture"]
         return memory
 
     def _memory_record(
@@ -266,8 +451,11 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
                 candidate_commit=candidate_commit,
                 journal=journal,
                 verification=verification,
-            )
+            ),
+            journal,
         )
 
     def _outcome_memory_record(self, **kwargs: Any) -> dict[str, Any]:
-        return self._repository_memory(super()._outcome_memory_record(**kwargs))
+        return self._repository_memory(
+            super()._outcome_memory_record(**kwargs), kwargs.get("journal")
+        )

@@ -68,7 +68,7 @@ def link_repository_runtime(
     """Install main's runtime surface except GPU Wiki/KernelWiki.
 
     The repository-local skills, including ``gen-plan``, remain discoverable so the
-    backend surface stays aligned with main.  The v3 prompt treats planning as an
+    backend surface stays aligned with main.  The v4 prompt treats planning as an
     optional engineering tool and never invokes ``gen-plan`` as a required stage.
     GPU Wiki and KernelWiki are deliberately absent from every discovery root.
     """
@@ -133,7 +133,7 @@ def link_repository_runtime(
 
 
 # Backward-compatible name for manifests/tools that imported the v2 helper.  Its
-# behavior is v3's main-aligned runtime, not the old asset-free runtime.
+# behavior is v4's main-aligned runtime, not the old asset-free runtime.
 install_minimal_runtime = link_repository_runtime
 
 

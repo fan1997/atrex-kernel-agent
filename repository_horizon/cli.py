@@ -35,7 +35,7 @@ def _atrex_bench_root(op_dir: Path) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Main-based repository-backed Long Horizon optimizer (v3)"
+        description="Main-based repository-backed Long Horizon optimizer (v4)"
     )
     parser.add_argument("--source-manifest", required=True)
     parser.add_argument("--source-checkout", required=True)
@@ -68,12 +68,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--framework", choices=("CuteDSL",), default="CuteDSL")
     parser.add_argument("--framework-baseline", choices=("never",), default="never")
     parser.add_argument("--no-workload-bucketing", action="store_true")
-    parser.add_argument("--episode-policy", choices=("main-v3",), default="main-v3")
+    parser.add_argument(
+        "--episode-policy",
+        choices=("main-v3", "main-v4"),
+        default="main-v4",
+    )
     parser.add_argument(
         "--max-iters", "--max-episodes", dest="max_episodes", type=int, default=20
     )
     parser.add_argument("--token-budget", type=int, default=0)
-    parser.add_argument("--max-stall", type=int, default=0)
+    parser.add_argument(
+        "--max-stall",
+        type=int,
+        default=0,
+        help=(
+            "Deprecated repository-mode alias for --architecture-escape-after; "
+            "repository campaigns never stop merely because progress stalls."
+        ),
+    )
+    parser.add_argument(
+        "--architecture-escape-after",
+        type=int,
+        default=5,
+        help="Enter architecture-escape mode after N consecutive unpromoted episodes.",
+    )
+    parser.add_argument(
+        "--architecture-review-interval",
+        type=int,
+        default=8,
+        help="Force a first-principles architecture review at least every N episodes.",
+    )
+    parser.add_argument(
+        "--architecture-commitment-episodes",
+        type=int,
+        default=3,
+        help="Protected episode budget for an architecture-level direction.",
+    )
     parser.add_argument("--handoff-resumes", type=int, default=1)
     parser.add_argument("--verify-repeats", type=int, default=2)
     parser.add_argument("--verify-run-timeout", type=int, default=120)
@@ -126,6 +156,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.max_episodes <= 0:
             raise ValueError("--max-episodes must be positive")
+        if (
+            min(
+                args.max_stall,
+                args.architecture_escape_after,
+                args.architecture_review_interval,
+                args.architecture_commitment_episodes,
+            )
+            < 0
+        ):
+            raise ValueError(
+                "stall and architecture policy values must be non-negative"
+            )
+        if args.architecture_commitment_episodes == 0:
+            raise ValueError("--architecture-commitment-episodes must be positive")
         if args.handoff_resumes < 0:
             raise ValueError("--handoff-resumes must be non-negative")
         if args.verify_repeats <= 0 or args.verify_run_timeout <= 0:
@@ -250,12 +294,19 @@ def main(argv: list[str] | None = None) -> int:
             max_version=args.max_episodes,
             token_budget=args.token_budget,
             handoff_resumes=args.handoff_resumes,
-            max_stall=args.max_stall,
+            # Repository-mode stagnation triggers architecture escape instead of
+            # terminating the campaign.  max-iters/token-budget remain hard bounds.
+            max_stall=0,
             evaluation_policy=policy,
+            architecture_escape_after=(
+                args.max_stall if args.max_stall > 0 else args.architecture_escape_after
+            ),
+            architecture_review_interval=args.architecture_review_interval,
+            architecture_commitment_episodes=args.architecture_commitment_episodes,
         )
         print(
             f"[repository-horizon] source={manifest.source_name}@{manifest.revision[:12]} "
-            f"agent={args.agent_cli} policy=main-v3 platform={args.platform} "
+            f"agent={args.agent_cli} policy={args.episode_policy} platform={args.platform} "
             f"evaluation={policy.backend}/{resolved_wait_mode} "
             f"hardware={hardware} endpoint={args.sandbox_profile or args.sandbox_url or 'default'} "
             f"workspace={campaign.workspace}",
