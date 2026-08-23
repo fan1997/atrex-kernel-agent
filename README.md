@@ -81,6 +81,11 @@ and profiling privately injects the selected real `PROFILE_SHAPE_ID` without exp
 This private injection and result-masking path is production-only; leaderboard keeps detailed shapes
 inside its workspace and uses the ordinary public evaluator path.
 
+For generalized Atrex-Bench workloads, `coverage.json`, `providers/`, exact
+shapes, and evaluator metadata remain evaluator-only. AKA receives and submits
+only the canonical Atrex `kernel.py::Model` path; provider audit is external to
+candidate eligibility and optimization feedback.
+
 GPU validation and profiling execute through the configured gateway, while optimization memory,
 plans, edits, episode state, and Git history remain local. Repository-scoped skills are prepared
 inside each campaign workspace, and campaign termination remains mechanically controlled by explicit

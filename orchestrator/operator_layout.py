@@ -37,6 +37,14 @@ LEGACY_ATREX_VISIBLE_FILES = (
     "metadata.json",
     "valid.py",
 )
+GENERALIZED_EVALUATOR_ONLY_ARTIFACTS = (
+    "shapes.json",
+    "metadata.json",
+    "roofline.json",
+    "coverage.json",
+    "providers",
+    "valid.py",
+)
 
 
 def is_sol_op(op_dir: Path) -> bool:

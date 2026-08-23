@@ -59,6 +59,7 @@ from .session_io import (
 )
 from .operator_layout import (
     AGENT_PROBLEM_FILENAME,
+    GENERALIZED_EVALUATOR_ONLY_ARTIFACTS,
     agent_visible_operator_files,
     has_agent_problem,
     is_sol_op,
@@ -380,7 +381,7 @@ class Campaign:
             ) from exc
         leaked = [
             name
-            for name in ("shapes.json", "metadata.json", "roofline.json", "valid.py")
+            for name in GENERALIZED_EVALUATOR_ONLY_ARTIFACTS
             if (self.workspace / name).exists()
         ]
         if leaked:
