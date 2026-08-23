@@ -327,6 +327,63 @@ def _dotted_name(node: ast.AST) -> str:
     return ""
 
 
+def _ctypes_external_load_violations(tree: ast.AST) -> list[str]:
+    """Reject ctypes' dynamic-library entry points, not its ABI scalar types.
+
+    ``cuda.bindings.driver.cuLaunchKernel`` accepts ctypes scalar classes in its
+    ``kernelParams`` tuple.  Treating any ``ctypes`` import as external code
+    loading therefore rejects the documented, self-contained CUDA launch path.
+    The loader APIs themselves remain mechanically forbidden.
+    """
+    module_aliases = {"ctypes"}
+    loader_aliases: set[str] = set()
+    violations: list[str] = []
+    loader_names = {"CDLL", "PyDLL", "WinDLL", "OleDLL"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "ctypes":
+                    module_aliases.add(alias.asname or "ctypes")
+        elif isinstance(node, ast.ImportFrom) and node.module == "ctypes":
+            for alias in node.names:
+                if alias.name == "*":
+                    violations.append(
+                        "dynamic external-code loading is forbidden in production candidate: ctypes.*"
+                    )
+                elif alias.name in loader_names:
+                    loader_aliases.add(alias.asname or alias.name)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            dotted = _dotted_name(node.func)
+            if dotted in loader_aliases:
+                violations.append(
+                    f"dynamic external-code loading is forbidden in production candidate: ctypes.{dotted}"
+                )
+                continue
+            parts = dotted.split(".")
+            if not parts or parts[0] not in module_aliases:
+                continue
+            suffix = parts[1:]
+            if (suffix and suffix[0] in loader_names) or suffix in (
+                ["cdll", "LoadLibrary"],
+                ["pydll", "LoadLibrary"],
+            ):
+                violations.append(
+                    f"dynamic external-code loading is forbidden in production candidate: {dotted}"
+                )
+        elif isinstance(node, ast.Attribute):
+            dotted = _dotted_name(node)
+            parts = dotted.split(".")
+            if parts and parts[0] in module_aliases and parts[1:] == ["pythonapi"]:
+                violations.append(
+                    f"dynamic external-code loading is forbidden in production candidate: {dotted}"
+                )
+
+    return list(dict.fromkeys(violations))
+
+
 def _torch_compute_violations(tree: ast.AST) -> list[str]:
     torch_aliases = {"torch"}
     functional_aliases: set[str] = set()
@@ -419,8 +476,9 @@ def production_kernel_violations(
         )
         for root in sorted(roots - allowed)
     ]
-    for root in sorted(roots & {"ctypes", "importlib", "pkgutil", "runpy", "subprocess"}):
+    for root in sorted(roots & {"importlib", "pkgutil", "runpy", "subprocess"}):
         errors.append(f"dynamic external-code loading is forbidden in production candidate: {root}")
+    errors.extend(_ctypes_external_load_violations(tree))
     errors.extend(_torch_compute_violations(tree))
 
     marker_checks = {
