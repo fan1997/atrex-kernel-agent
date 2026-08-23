@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -22,6 +23,9 @@ from .support_wheel import canonical_distribution
 from .verifier import RepositoryABBAValidator, RepositoryPhaseValidator
 
 
+_CAMPAIGN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 def _atrex_bench_root(op_dir: Path) -> Path:
     for candidate in (op_dir, *op_dir.parents):
         if (candidate / "scripts" / "run_eval.py").is_file() and (
@@ -31,6 +35,16 @@ def _atrex_bench_root(op_dir: Path) -> Path:
     raise ValueError(
         f"cannot find Atrex-Bench root above {op_dir}; missing scripts/run_eval.py/src/atrex_bench"
     )
+
+
+def _validated_campaign_name(requested: str, op_dir: Path) -> str:
+    name = requested or op_dir.name
+    if name in {".", ".."} or _CAMPAIGN_NAME.fullmatch(name) is None:
+        raise ValueError(
+            "--campaign-name must contain only letters, digits, '.', '_', or '-', "
+            "and must begin with a letter or digit"
+        )
+    return name
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DISTRIBUTION=PATH",
     )
     parser.add_argument("--op-dir", required=True)
+    parser.add_argument(
+        "--campaign-name",
+        default="",
+        help=(
+            "public campaign identity; defaults to the operator directory basename. "
+            "Set this when that basename contains private or historical labels."
+        ),
+    )
     parser.add_argument("--platform", required=True)
     parser.add_argument("--sandbox-hardware", default="")
     parser.add_argument("--sandbox-profile", choices=("pre", "prod"), default="")
@@ -215,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
             args.framework, args.platform, args.optimization_mode
         )
         campaign = RepositoryCampaign(
-            name=op_dir.name,
+            name=_validated_campaign_name(args.campaign_name, op_dir),
             kernel_demo=str(op_dir / "reference.py"),
             platform=args.platform,
             framework=args.framework,

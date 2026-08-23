@@ -26,6 +26,7 @@ from repository_horizon.campaign import (
     RepositoryCampaign,
     RepositoryHorizonCampaign,
 )
+from repository_horizon.cli import _validated_campaign_name
 from repository_horizon.compat import assert_upstream_compatible
 from repository_horizon.config import EvaluationPolicy
 from repository_horizon.dev_eval import _verifier as make_dev_verifier
@@ -46,6 +47,25 @@ MANIFEST = ROOT / "recipes" / "fa4_fp8_paged_sm100.example.json"
 
 
 class RepositoryV3Tests(unittest.TestCase):
+    def test_public_campaign_name_can_hide_private_operator_basename(self) -> None:
+        private_operator = Path("/private/evaluator/historical-winner-label")
+        self.assertEqual(
+            _validated_campaign_name("fa4-hd256-private", private_operator),
+            "fa4-hd256-private",
+        )
+        self.assertEqual(
+            _validated_campaign_name("", private_operator),
+            "historical-winner-label",
+        )
+
+    def test_public_campaign_name_rejects_path_syntax(self) -> None:
+        for value in ("../escape", "/absolute", "has space", ""):
+            with self.subTest(value=value):
+                if not value:
+                    continue
+                with self.assertRaises(ValueError):
+                    _validated_campaign_name(value, Path("/private/operator"))
+
     def test_measured_v0_keeps_normal_abba_after_interrupted_memory(self) -> None:
         normal = object()
         bringup = object()
