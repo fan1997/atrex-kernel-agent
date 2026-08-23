@@ -48,11 +48,24 @@ State is stored outside candidate Git history in:
 - `.repository_horizon_runtime/architecture_map.json`
 - `.repository_horizon_runtime/architecture_wip.patch`
 
+## Previous isolated run
+
+- Mechanism version: Repository Horizon v3 at `33b446f`
+- Campaign root: `/data/ai-users/fanzheng/home/reproduce_mudi_trace_with_aka/campaigns/mudi5-v3-private`
+- Paused after starting episode 49; latest canonical memory is version 48.
+- Preserved incumbent source commit: `54b9e1cbf725188748552a6a68aa71a46324d1d1`
+
+The v3 supervisor and its active coding session were terminated without deleting the incumbent,
+episode worktree, journal, canonical memory, or gateway records. This makes the pause auditable and
+recoverable while preventing the old optimizer from competing with the new experiment for GPU 4.
+
 ## New isolated run
 
 - Campaign label: `fa4-hd256-v4-private`
 - Agent-visible operator label: `fa4-hd256-private`
 - Campaign root: `/data/ai-users/fanzheng/home/reproduce_mudi_trace_with_aka/campaigns/fa4-hd256-v4-private`
+- Launch wrapper: `/data/ai-users/fanzheng/home/reproduce_mudi_trace_with_aka/run_fa4_hd256_v4_private.sh`
+- Restart watchdog: `/data/ai-users/fanzheng/home/reproduce_mudi_trace_with_aka/watch_fa4_hd256_v4_private.sh`
 - GPU gateway: `http://127.0.0.1:8004`, physically pinned to GPU 4
 - Agent backend: Claude through Bailian
 - Optional plan reviewer: Codex `gpt-5.6-sol`, effort `high`
