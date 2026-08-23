@@ -16,15 +16,18 @@ to become feature-complete.
 - Previous mechanism branch: `feat/repository-horizon-v3`
 - Previous mechanism commit: `33b446f`
 - Branch: `feat/repository-horizon-v4-architecture-escape`
-- Implementation commit: `f1eb8e7`
+- Architecture-escape implementation commit: `f1eb8e7`
+- Private-label isolation hardening commit: `cddcce2`
 - Locked source revision: `b54df166ebb69b896892826014759d09b9c3c9c6`
 - Editable source remains limited to the manifest-declared `flash_attn/cute` tree.
 
 The previous version is the thin current-main Repository Horizon v3 implementation at `33b446f`.
-The next version under test is v4 at `f1eb8e7`: it retains v3's evaluator, workspace, prompt,
-promotion, and isolation contracts and changes only how the campaign reacts to architectural
-stagnation. Both commit identifiers are implementation commits; this document is a separate
-record-only commit and does not change runtime behavior.
+The next version under test is v4 at `f1eb8e7`, plus the launch-identity hardening at `cddcce2`:
+it retains v3's evaluator, workspace, prompt, promotion, and isolation contracts and changes only
+how the campaign reacts to architectural stagnation. The hardening commit lets the public campaign
+identity be set independently from a private evaluator directory name, so private or historical
+labels cannot leak through generated workspace paths. These are implementation commits; document
+commits do not change runtime behavior.
 
 V4 keeps the v3 isolation model and current-main supervisor. It adds only:
 
@@ -48,6 +51,7 @@ State is stored outside candidate Git history in:
 ## New isolated run
 
 - Campaign label: `fa4-hd256-v4-private`
+- Agent-visible operator label: `fa4-hd256-private`
 - Campaign root: `/data/ai-users/fanzheng/home/reproduce_mudi_trace_with_aka/campaigns/fa4-hd256-v4-private`
 - GPU gateway: `http://127.0.0.1:8004`, physically pinned to GPU 4
 - Agent backend: Claude through Bailian
