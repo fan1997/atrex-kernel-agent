@@ -790,6 +790,49 @@ class LongHorizonCampaign:
             and attempt.get("episode_branch") == branch
             for attempt in state.attempts
         )
+        # ``active_episode.json`` is created before the isolated worktree is fully
+        # prepared.  A failure in runtime linking or a specialization hook therefore
+        # does not prove that an optimization episode ever reached the coding agent.
+        # Do not turn such pre-agent setup failures into canonical ``interrupted``
+        # episodes on every watchdog restart.  ``exploring`` plus an initialized
+        # journal is retained as a compatibility signal for sessions started by older
+        # supervisors, which did not persist the explicit ``running`` phase below.
+        journal_path = (
+            worktree_path / RUNTIME_DIR / "journal.json"
+            if worktree_path is not None
+            else None
+        )
+        pre_agent_failure = phase == "preparing" or (
+            phase == "exploring"
+            and (journal_path is None or not journal_path.is_file())
+        )
+        if pre_agent_failure:
+            if git_head(self.workspace) != base_commit:
+                raise RuntimeError(
+                    "incumbent advanced during pre-agent episode setup"
+                )
+            if worktree_path is not None and worktree_path != self.workspace.resolve():
+                registered = {
+                    Path(line.split(" ", 1)[1]).resolve()
+                    for line in git_text(
+                        self.workspace, "worktree", "list", "--porcelain"
+                    ).splitlines()
+                    if line.startswith("worktree ")
+                }
+                if worktree_path in registered:
+                    EpisodeWorktree(
+                        episode,
+                        base_commit,
+                        branch or "atrex/recovery",
+                        worktree_path,
+                    ).remove(self.workspace)
+            store.clear_active()
+            print(
+                f"[long-horizon] discarded unstarted episode={episode} "
+                f"after pre-agent setup interruption (phase={phase})",
+                flush=True,
+            )
+            return
         if git_head(self.workspace) != base_commit:
             message = git_text(self.workspace, "log", "-1", "--format=%s", check=False)
             parent = git_text(self.workspace, "rev-parse", "HEAD^", check=False)
@@ -1084,6 +1127,8 @@ class LongHorizonCampaign:
                 conversion_pending=conversion_pending,
             )
             store.write_brief(episode, prompt)
+            active["phase"] = "running"
+            store.save_active(active)
             telemetry_environment = {
                 "ATREX_TELEMETRY_TRACE": str(runtime / "telemetry.jsonl"),
                 "ATREX_TELEMETRY_CAMPAIGN_ID": str(

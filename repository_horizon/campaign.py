@@ -318,7 +318,13 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             temporary = store.wip_patch_path.with_suffix(".patch.tmp")
             temporary.write_bytes(completed.stdout)
             temporary.replace(store.wip_patch_path)
-            strategy.wip_base_commit = worktree.base_commit
+            # A rejected candidate is recorded as a new canonical outcome commit
+            # before this hook runs.  Its editable source is still the incumbent,
+            # but its commit identity has advanced because memory was recorded.
+            # Anchor the carry-forward patch to that new canonical HEAD so the next
+            # isolated worktree can restore it without weakening apply_wip's exact
+            # base safety check.
+            strategy.wip_base_commit = git_head(self.workspace)
             strategy.wip_source_commit = checkpoint
             strategy.wip_patch_sha256 = hashlib.sha256(completed.stdout).hexdigest()
         elif disposition in {
