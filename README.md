@@ -84,7 +84,11 @@ inside its workspace and uses the ordinary public evaluator path.
 For generalized Atrex-Bench workloads, `coverage.json`, `providers/`, exact
 shapes, and evaluator metadata remain evaluator-only. AKA receives and submits
 only the canonical Atrex `kernel.py::Model` path; provider audit is external to
-candidate eligibility and optimization feedback.
+candidate eligibility and optimization feedback. After a candidate is promoted,
+the supervisor privately runs the contract-owned candidate/reference/provider
+matrix and stores it outside the candidate workspace. A missing or failed audit
+is reported as evaluator infrastructure evidence and never reverses promotion or
+enters subsequent agent prompts or memory.
 
 GPU validation and profiling execute through the configured gateway, while optimization memory,
 plans, edits, episode state, and Git history remain local. Repository-scoped skills are prepared

@@ -943,6 +943,11 @@ class LongHorizonCampaign:
                 self.workspace
             )
         self._recover_interrupted(store, state)
+        private_audit = getattr(
+            self.base_campaign, "ensure_private_provider_audit", None
+        )
+        if callable(private_audit):
+            private_audit()
         verifier = self.verifier or GatewayABBAValidator(
             hardware=self.base_campaign.sandbox_hardware,
             profile=self.base_campaign.sandbox_profile,
@@ -1218,6 +1223,11 @@ class LongHorizonCampaign:
                 active["phase"] = "promoted"
                 active["promotion_commit"] = promotion_commit
                 store.save_active(active)
+                private_audit = getattr(
+                    self.base_campaign, "ensure_private_provider_audit", None
+                )
+                if callable(private_audit):
+                    private_audit(memory_version)
             else:
                 active["phase"] = "recording"
                 active["terminal_status"] = status

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -129,6 +130,8 @@ class Campaign:
     verify_run_timeout: int = DEFAULT_VERIFY_RUN_TIMEOUT
     min_improvement_pct: float = 0.0
     long_reviewer_session: str = ""
+    private_provider_audit_root: str = ""
+    private_provider_audit_cuda_visible_devices: str = ""
     tokens_spent: int = field(default=0, init=False)
     _dependency_review_cache: dict[str, tuple[str, ...]] = field(
         default_factory=dict, init=False, repr=False, compare=False
@@ -395,6 +398,223 @@ class Campaign:
     def workspace(self) -> Path:
         base = Path(self.work_dir) if self.work_dir else Path.cwd()
         return base / f"kernel_opt_{self.campaign_name}"
+
+    @property
+    def private_provider_audit_output_root(self) -> Path:
+        """Return evaluator-owned storage outside the candidate Git workspace."""
+        if self.private_provider_audit_root:
+            return Path(self.private_provider_audit_root).expanduser().resolve()
+        return self.workspace.parent / "private-provider-audits"
+
+    def _private_provider_evidence_inputs(self) -> dict[str, str]:
+        """Hash the private contract inputs used to decide whether an audit is current."""
+        operator = self.private_reference_dir
+        if operator is None:
+            return {}
+        paths = [
+            operator / name
+            for name in (
+                "coverage.json",
+                "shapes.json",
+                "metadata.json",
+                "input.py",
+                "reference.py",
+            )
+            if (operator / name).is_file()
+        ]
+        providers = operator / "providers"
+        if providers.is_dir():
+            paths.extend(
+                path
+                for path in providers.rglob("*")
+                if path.is_file()
+                and not path.is_symlink()
+                and "__pycache__" not in path.parts
+                and path.suffix not in {".pyc", ".pyo"}
+            )
+        return {
+            path.relative_to(operator).as_posix(): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in sorted(paths)
+        }
+
+    def _matching_private_provider_audit(
+        self, candidate_sha256: str, evidence_inputs: dict[str, str]
+    ) -> Path | None:
+        root = self.private_provider_audit_output_root
+        if not root.is_dir():
+            return None
+        for path in root.rglob("audit.json"):
+            try:
+                report = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            candidate = report.get("candidate")
+            evidence = report.get("evidence")
+            summary = report.get("summary")
+            findings = report.get("findings")
+            pair_groups = (
+                findings.get("pair_groups") if isinstance(findings, dict) else None
+            )
+            candidate_pairs = (
+                pair_groups.get("candidate_vs_provider")
+                if isinstance(pair_groups, dict)
+                else None
+            )
+            if (
+                report.get("scope") == "candidate_human_audit"
+                and report.get("execution_status") == "complete"
+                and isinstance(candidate, dict)
+                and candidate.get("sha256") == candidate_sha256
+                and isinstance(evidence, dict)
+                and evidence.get("operator_inputs") == evidence_inputs
+                and isinstance(summary, dict)
+                and summary.get("provider_set_complete") is True
+                and summary.get("provider_coverage_complete") is True
+                and isinstance(candidate_pairs, dict)
+                and int(candidate_pairs.get("comparison_count") or 0) > 0
+            ):
+                return path
+        return None
+
+    def _latest_accepted_version_for_current_kernel(self) -> int | None:
+        """Find the newest accepted memory whose candidate is the current kernel."""
+        head_blob = git_kernel_blob(self.workspace)
+        if not head_blob:
+            return None
+        for version in range(latest_version(self.workspace), -1, -1):
+            memory = read_memory(self.workspace, version)
+            if not isinstance(memory, dict):
+                continue
+            if (memory.get("quality_gate") or {}).get("result") != "PASS":
+                continue
+            candidate_commit = memory.get("git_commit_hash")
+            if not isinstance(candidate_commit, str) or not candidate_commit:
+                continue
+            if git_path_blob(self.workspace, candidate_commit, "kernel.py") == head_blob:
+                return version
+        return None
+
+    def ensure_private_provider_audit(self, version: int | None = None) -> Path | None:
+        """Privately audit the accepted kernel without feeding findings to AKA.
+
+        The audit runs only for native production contracts that explicitly own a
+        private-provider policy.  It is post-promotion human evidence: failure never
+        changes eligibility, memory, the episode prompt, or the next search decision.
+        """
+        operator = self.private_reference_dir
+        if operator is None:
+            return None
+        coverage_path = operator / "coverage.json"
+        providers_path = operator / "providers"
+        if not coverage_path.is_file() or not providers_path.is_dir():
+            return None
+        try:
+            coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(coverage.get("private_provider_audit"), dict):
+            return None
+        if version is None:
+            version = self._latest_accepted_version_for_current_kernel()
+        if version is None:
+            return None
+
+        candidate = self.workspace / "kernel.py"
+        candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        evidence_inputs = self._private_provider_evidence_inputs()
+        existing = self._matching_private_provider_audit(
+            candidate_sha256, evidence_inputs
+        )
+        if existing is not None:
+            print(
+                f"[orchestrator] private provider audit already current for v{version} "
+                f"candidate={candidate_sha256[:16]}",
+                flush=True,
+            )
+            return existing
+
+        benchmark_root = Path(self.atrex_bench_root).resolve()
+        audit_script = benchmark_root / "scripts" / "audit_candidate_providers.py"
+        if not audit_script.is_file():
+            print(
+                "[orchestrator] WARNING: private provider audit script is unavailable",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+        output_root = self.private_provider_audit_output_root
+        output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        output_root.chmod(0o700)
+        environment = os.environ.copy()
+        benchmark_src = str(benchmark_root / "src")
+        inherited_pythonpath = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            benchmark_src
+            + (os.pathsep + inherited_pythonpath if inherited_pythonpath else "")
+        )
+        environment.pop(ATREX_PRIVATE_REFERENCE_ENV, None)
+        if self.private_provider_audit_cuda_visible_devices:
+            environment["CUDA_VISIBLE_DEVICES"] = (
+                self.private_provider_audit_cuda_visible_devices
+            )
+        print(
+            f"[orchestrator] private provider audit starting for accepted v{version} "
+            f"candidate={candidate_sha256[:16]}",
+            flush=True,
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(audit_script),
+                    "--reference-dir",
+                    str(operator),
+                    "--candidate",
+                    str(candidate),
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=str(benchmark_root),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=max(7_200, self.sandbox_timeout * 12),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(
+                "[orchestrator] WARNING: private provider audit infrastructure failed: "
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+        if completed.returncode != 0:
+            print(
+                "[orchestrator] WARNING: private provider audit exited "
+                f"with code {completed.returncode}; details remain evaluator-private",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+        artifact = self._matching_private_provider_audit(
+            candidate_sha256, evidence_inputs
+        )
+        if artifact is None:
+            print(
+                "[orchestrator] WARNING: private provider audit did not produce a "
+                "complete candidate/provider matrix",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+        print(
+            f"[orchestrator] private provider audit recorded for accepted v{version} "
+            f"candidate={candidate_sha256[:16]}",
+            flush=True,
+        )
+        return artifact
 
     def _account(self, res: SessionResult, label: str) -> None:
         self.tokens_spent += res.tokens

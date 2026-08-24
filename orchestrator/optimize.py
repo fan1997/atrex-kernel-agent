@@ -553,6 +553,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         "kernel_opt_<name>_<framework>_<platform>/ workspace is created under this "
         "directory. Default: current working directory.",
     )
+    ap.add_argument(
+        "--private-provider-audit-root",
+        default="",
+        help=(
+            "Evaluator-private output directory for post-promotion candidate/provider "
+            "audits. Default: <workspace-parent>/private-provider-audits."
+        ),
+    )
+    ap.add_argument(
+        "--private-provider-audit-cuda-visible-devices",
+        default="",
+        help=(
+            "Optional CUDA_VISIBLE_DEVICES value used only by the supervisor-owned "
+            "post-promotion private audit. It is never passed to the optimization agent."
+        ),
+    )
     ap.add_argument("--workspace-suffix", default="", help=argparse.SUPPRESS)
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = ap.parse_args(raw_argv)
@@ -698,6 +714,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         verify_run_timeout=args.verify_run_timeout,
         min_improvement_pct=args.min_improvement_pct,
         long_reviewer_session=args.long_reviewer_session,
+        private_provider_audit_root=args.private_provider_audit_root,
+        private_provider_audit_cuda_visible_devices=(
+            args.private_provider_audit_cuda_visible_devices
+        ),
         convert_after=args.convert_after,
     )
     if latest_version(campaign.workspace) < 0:
