@@ -362,6 +362,22 @@ class LongHorizonCampaign:
         """Optional specialization hook before the isolated worktree is removed."""
         del worktree, state, result, journal, attempt, accepted
 
+    def _after_recovered_outcome_recorded(
+        self,
+        *,
+        episode: int,
+        base_commit: str,
+        outcome_commit: str,
+    ) -> None:
+        """Reconcile specialization state after recovering an outcome commit.
+
+        Recovery can observe an outcome commit written immediately before a
+        supervisor crash, or it can write the interrupted outcome itself.  In both
+        cases specializations must see the same canonical-HEAD transition that the
+        normal episode-recording path observes.
+        """
+        del episode, base_commit, outcome_commit
+
     def _validate_candidate(
         self, worktree: EpisodeWorktree, candidate_commit: str
     ) -> tuple[str, list[str]]:
@@ -808,9 +824,7 @@ class LongHorizonCampaign:
         )
         if pre_agent_failure:
             if git_head(self.workspace) != base_commit:
-                raise RuntimeError(
-                    "incumbent advanced during pre-agent episode setup"
-                )
+                raise RuntimeError("incumbent advanced during pre-agent episode setup")
             if worktree_path is not None and worktree_path != self.workspace.resolve():
                 registered = {
                     Path(line.split(" ", 1)[1]).resolve()
@@ -868,6 +882,12 @@ class LongHorizonCampaign:
             if not (promoted or outcome_recorded):
                 raise RuntimeError(
                     "incumbent advanced during an interrupted episode without proof"
+                )
+            if outcome_recorded:
+                self._after_recovered_outcome_recorded(
+                    episode=episode,
+                    base_commit=base_commit,
+                    outcome_commit=git_head(self.workspace),
                 )
             if not already_recorded:
                 state.episodes = max(state.episodes, episode)
@@ -968,6 +988,11 @@ class LongHorizonCampaign:
             active["phase"] = "recorded"
             active["outcome_commit"] = outcome_commit
             store.save_active(active)
+            self._after_recovered_outcome_recorded(
+                episode=episode,
+                base_commit=base_commit,
+                outcome_commit=outcome_commit,
+            )
             attempt = {
                 "episode": episode,
                 "version": memory_version,

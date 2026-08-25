@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import runpy
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,11 +47,142 @@ from repository_horizon.verifier import (
     _require_complete_shape_coverage,
     has_measured_v0,
 )
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "recipes" / "fa4_fp8_paged_sm100.example.json"
 
 
 class RepositoryV3Tests(unittest.TestCase):
+    def test_interrupted_architecture_recovery_reanchors_wip_to_outcome_head(
+        self,
+    ) -> None:
+        manifest = load_manifest(MANIFEST)
+        relative = f"{manifest.editable_workspace_roots[0]}/kernel.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            init_repo(workspace)
+            source = workspace / relative
+            source.parent.mkdir(parents=True)
+            source.write_text("VALUE = 1\n", encoding="utf-8")
+            run_git(workspace, "add", ".")
+            run_git(workspace, "commit", "-m", "repository baseline")
+            base = git_head(workspace)
+
+            trial = EpisodeWorktree.create(
+                workspace, 99, base, root=root / "trial-worktrees"
+            )
+            trial_source = trial.path / relative
+            trial_source.write_text("VALUE = 2\n", encoding="utf-8")
+            run_git(trial.path, "add", relative)
+            run_git(trial.path, "commit", "-m", "architecture checkpoint")
+            checkpoint = git_head(trial.path)
+            patch_bytes = subprocess.run(
+                ["git", "diff", "--binary", base, checkpoint, "--"],
+                cwd=str(trial.path),
+                check=True,
+                capture_output=True,
+            ).stdout
+
+            controller = RepositoryHorizonCampaign(
+                base_campaign=SimpleNamespace(workspace=workspace),
+                manifest=manifest,
+            )
+            strategy = ArchitectureStrategyState(
+                mode="architecture",
+                commitment_remaining=2,
+                wip_base_commit=base,
+                wip_source_commit=checkpoint,
+                wip_patch_sha256=hashlib.sha256(patch_bytes).hexdigest(),
+            )
+            controller.strategy_store.save(strategy)
+            controller.strategy_store.wip_patch_path.write_bytes(patch_bytes)
+
+            memory = workspace / "memory"
+            memory.mkdir()
+            (memory / "v1.json").write_text("{}\n", encoding="utf-8")
+            run_git(workspace, "add", "memory/v1.json")
+            run_git(
+                workspace,
+                "commit",
+                "-m",
+                "v1: long-horizon episode 1 interrupted",
+            )
+            outcome_head = git_head(workspace)
+            store = CampaignStore(workspace)
+            store.save_active(
+                {
+                    "episode": 1,
+                    "memory_version": 1,
+                    "base_commit": base,
+                    "episode_branch": "atrex/long-e0001-recovery",
+                    "phase": "recorded",
+                    "terminal_status": "interrupted",
+                }
+            )
+
+            state = SupervisorState()
+            controller._recover_interrupted(store, state)
+
+            saved = controller.strategy_store.load()
+            self.assertEqual(saved.wip_base_commit, outcome_head)
+            self.assertEqual(saved.wip_source_commit, checkpoint)
+            self.assertEqual(state.episodes, 1)
+            self.assertEqual(state.interrupted, 1)
+            self.assertIsNone(store.load_active())
+            next_worktree = EpisodeWorktree.create(
+                workspace, 2, outcome_head, root=root / "worktrees"
+            )
+            self.assertTrue(
+                controller.strategy_store.apply_wip(next_worktree.path, saved)
+            )
+            self.assertEqual(
+                (next_worktree.path / relative).read_text(encoding="utf-8"),
+                "VALUE = 2\n",
+            )
+            next_worktree.remove(workspace)
+            trial.remove(workspace)
+
+    def test_recovered_wip_reanchor_rejects_editable_source_change(self) -> None:
+        manifest = load_manifest(MANIFEST)
+        relative = f"{manifest.editable_workspace_roots[0]}/kernel.py"
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            init_repo(workspace)
+            source = workspace / relative
+            source.parent.mkdir(parents=True)
+            source.write_text("VALUE = 1\n", encoding="utf-8")
+            run_git(workspace, "add", ".")
+            run_git(workspace, "commit", "-m", "repository baseline")
+            base = git_head(workspace)
+
+            controller = RepositoryHorizonCampaign(
+                base_campaign=SimpleNamespace(workspace=workspace),
+                manifest=manifest,
+            )
+            controller.strategy_store.save(
+                ArchitectureStrategyState(
+                    mode="architecture",
+                    wip_base_commit=base,
+                )
+            )
+            controller.strategy_store.wip_patch_path.write_text(
+                "placeholder\n", encoding="utf-8"
+            )
+            source.write_text("VALUE = 3\n", encoding="utf-8")
+            run_git(workspace, "add", relative)
+            run_git(workspace, "commit", "-m", "source changed")
+
+            with self.assertRaisesRegex(
+                RuntimeError, "editable repository roots changed"
+            ):
+                controller._after_recovered_outcome_recorded(
+                    episode=1,
+                    base_commit=base,
+                    outcome_commit=git_head(workspace),
+                )
+            self.assertEqual(controller.strategy_store.load().wip_base_commit, base)
+
     def test_pre_agent_setup_interruption_does_not_consume_an_episode(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -203,8 +336,7 @@ class RepositoryV3Tests(unittest.TestCase):
             self.assertIs(validator._validator(workspace), normal)
 
             (memory / "v0.json").write_text(
-                json.dumps({"quality_gate": {"result": "BRINGUP_REQUIRED"}})
-                + "\n",
+                json.dumps({"quality_gate": {"result": "BRINGUP_REQUIRED"}}) + "\n",
                 encoding="utf-8",
             )
             self.assertFalse(has_measured_v0(workspace))
@@ -353,9 +485,7 @@ class RepositoryV3Tests(unittest.TestCase):
                 work_dir=str(workspace.parent),
                 repository_manifest=manifest,
             )
-            self.assertEqual(
-                campaign._production_kernel_violations(workspace), []
-            )
+            self.assertEqual(campaign._production_kernel_violations(workspace), [])
 
     def test_public_profile_never_materializes_a_private_case_without_capability(
         self,
@@ -383,7 +513,9 @@ class RepositoryV3Tests(unittest.TestCase):
             )
             self.assertTrue(created)
             claimed = store.claim_next()
-            self.assertEqual(claimed[2]["files"]["runtime/shapes.json"], "private-shape")
+            self.assertEqual(
+                claimed[2]["files"]["runtime/shapes.json"], "private-shape"
+            )
             persisted = store.request(job["job_id"])
             self.assertTrue(persisted["_payload_redacted"])
             self.assertNotIn("files", persisted)
@@ -394,9 +526,7 @@ class RepositoryV3Tests(unittest.TestCase):
             (workdir / "runtime" / "shapes.json").write_text("private")
             (workdir / "runtime" / "metadata.json").write_text("private")
             (workdir / ".runs" / "00_candidate_0").mkdir(parents=True)
-            (workdir / ".runs" / "00_candidate_0" / "shapes.json").write_text(
-                "private"
-            )
+            (workdir / ".runs" / "00_candidate_0" / "shapes.json").write_text("private")
             (workdir / "reference").mkdir()
             (workdir / "reference" / "roofline.json").write_text("private")
             (workdir / "keep.txt").write_text("public")

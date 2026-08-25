@@ -352,6 +352,58 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             strategy.review_required = True
         store.save(strategy)
 
+    def _after_recovered_outcome_recorded(
+        self,
+        *,
+        episode: int,
+        base_commit: str,
+        outcome_commit: str,
+    ) -> None:
+        store = self.strategy_store
+        strategy = store.load()
+        if strategy.mode != "architecture" or not store.wip_patch_path.is_file():
+            return
+        if strategy.wip_base_commit == outcome_commit:
+            return
+        if strategy.wip_base_commit != base_commit:
+            raise RuntimeError(
+                "cannot re-anchor architecture WIP after recovery: its recorded "
+                "base does not match the interrupted episode base"
+            )
+        completed = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--quiet",
+                base_commit,
+                outcome_commit,
+                "--",
+                *self.repository_manifest.editable_workspace_roots,
+            ],
+            cwd=str(self.workspace),
+            check=False,
+        )
+        if completed.returncode == 1:
+            raise RuntimeError(
+                "cannot re-anchor architecture WIP after recovery: editable "
+                "repository roots changed"
+            )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "cannot verify editable repository roots while re-anchoring "
+                "architecture WIP after recovery"
+            )
+        strategy.wip_base_commit = outcome_commit
+        strategy.history.append(
+            {
+                "event": "architecture_wip_reanchored_after_recovery",
+                "episode": episode,
+                "old_base_commit": base_commit,
+                "new_base_commit": outcome_commit,
+            }
+        )
+        store.save(strategy)
+
     def _validate_candidate(
         self, worktree: EpisodeWorktree, candidate_commit: str
     ) -> tuple[str, list[str]]:
