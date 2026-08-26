@@ -376,7 +376,7 @@ class PreplanValidationTests(unittest.TestCase):
             prompt = render_preplan_prompt(FakeCampaign(), manifest, Path(temp))
         self.assertIn("--input vendor/example_source", prompt)
         self.assertIn("T_bridge = T(R1 -> R2) + T_C(R2) + T_post", prompt)
-        self.assertIn("python -m repository_horizon.preplan validate", prompt)
+        self.assertIn("validate_preplan.py", prompt)
         self.assertNotIn("vendor/flash_attention", prompt)
         self.assertNotIn("paged representation", prompt.casefold())
         self.assertNotIn("mudi", prompt.casefold())

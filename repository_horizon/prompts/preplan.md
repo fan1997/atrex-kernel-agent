@@ -115,11 +115,11 @@ Hard prohibitions:
 
 ## Required JSON contract
 
-Use `repository_horizon/prompts/preplan_schema_v3.example.json` as the concrete shape reference. Before
-stopping, run:
+Use the supervisor-provided read-only schema reference `{{SCHEMA_EXAMPLE}}` inside this isolated
+worktree. Before stopping, run:
 
 ```bash
-python -m repository_horizon.preplan validate {{ARTIFACT}}
+{{VALIDATOR_COMMAND}}
 ```
 
 Fix every reported violation without deleting substantive routes or evidence. The supervisor may start

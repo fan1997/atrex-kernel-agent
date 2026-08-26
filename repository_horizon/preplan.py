@@ -23,6 +23,15 @@ from .runtime import link_repository_runtime
 PREPLAN_ARTIFACT = PurePosixPath("plans/end_to_end_architecture_frontier.json")
 PREPLAN_PROFILE_ROOT = PurePosixPath("profiles/preplan")
 PREPLAN_PROMPT = Path(__file__).resolve().parent / "prompts" / "preplan.md"
+PREPLAN_SCHEMA_EXAMPLE = (
+    Path(__file__).resolve().parent / "prompts" / "preplan_schema_v3.example.json"
+)
+PREPLAN_RUNTIME_SCHEMA = PurePosixPath(
+    ".repository_horizon_runtime/preplan_schema_v3.example.json"
+)
+PREPLAN_RUNTIME_VALIDATOR = PurePosixPath(
+    ".repository_horizon_runtime/validate_preplan.py"
+)
 EVIDENCE_LEVELS = frozenset(
     {"measured", "derived_bound", "estimated", "speculative", "unknown"}
 )
@@ -1072,6 +1081,29 @@ def _profile_violations(workspace: Path) -> list[str]:
     return violations
 
 
+def _install_preplan_validation_tools(workspace: Path) -> None:
+    """Expose deterministic schema help inside the isolated agent worktree."""
+
+    schema = workspace / PREPLAN_RUNTIME_SCHEMA
+    schema.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PREPLAN_SCHEMA_EXAMPLE, schema)
+    source_root = Path(__file__).resolve().parent.parent
+    validator = workspace / PREPLAN_RUNTIME_VALIDATOR
+    validator.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(source_root)!r})\n"
+        "from repository_horizon.preplan import validate_preplan_artifact\n"
+        "violations = validate_preplan_artifact(Path(sys.argv[1]))\n"
+        "for violation in violations:\n"
+        "    print(f'PREPLAN_SCHEMA_ERROR: {violation}')\n"
+        "if violations:\n"
+        "    raise SystemExit(1)\n"
+        "print('PREPLAN_SCHEMA_VALID')\n",
+        encoding="utf-8",
+    )
+
+
 def render_preplan_prompt(
     campaign: Any, manifest: RepositoryManifest, workspace: Path
 ) -> str:
@@ -1102,6 +1134,13 @@ def render_preplan_prompt(
             CORPUS_RELATIVE if read_catalog(workspace) is not None else "unavailable"
         ),
         "ARTIFACT": PREPLAN_ARTIFACT.as_posix(),
+        "SCHEMA_EXAMPLE": PREPLAN_RUNTIME_SCHEMA.as_posix(),
+        "VALIDATOR_COMMAND": (
+            "python "
+            + PREPLAN_RUNTIME_VALIDATOR.as_posix()
+            + " "
+            + PREPLAN_ARTIFACT.as_posix()
+        ),
         "PUBLIC_DEV_COMMAND": public_dev,
         "SANDBOX": campaign._sandbox_directive(),
     }
@@ -1216,9 +1255,9 @@ authored `{PREPLAN_ARTIFACT.as_posix()}` but deterministic validation rejected i
 Preserve every substantive route, experiment, measurement, uncertainty, and ranking conclusion. Do not
 research, probe, benchmark, edit tracked files, or introduce a new architecture. Only translate the
 existing authored content into the schema shown in
-`repository_horizon/prompts/preplan_schema_v3.example.json`, repair references, and run:
+`{PREPLAN_RUNTIME_SCHEMA.as_posix()}`, repair references, and run:
 
-`python -m repository_horizon.preplan validate {PREPLAN_ARTIFACT.as_posix()}`
+`python {PREPLAN_RUNTIME_VALIDATOR.as_posix()} {PREPLAN_ARTIFACT.as_posix()}`
 
 Repeat until it prints `PREPLAN_SCHEMA_VALID`, then stop. Current violations:
 
@@ -1261,6 +1300,7 @@ Repeat until it prints `PREPLAN_SCHEMA_VALID`, then stop. Current violations:
             text=True,
         )
         link_repository_runtime(self.campaign, worktree, self.manifest)
+        _install_preplan_validation_tools(worktree)
         corpus = read_catalog(worktree)
         if corpus is not None:
             corpus_violations = validate_source_corpus(
