@@ -18,6 +18,7 @@ from .compat import (
 )
 from .config import EvaluationPolicy, endpoint_is_local
 from .manifest import load_manifest
+from .preplan import PreplanRunner
 from .support_wheel import canonical_distribution
 from .verifier import RepositoryABBAValidator, RepositoryPhaseValidator
 
@@ -86,6 +87,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate/prepare the locked incumbent and exit before starting an Agent episode",
     )
+    parser.add_argument(
+        "--preplan-only",
+        action="store_true",
+        help=(
+            "prepare the locked incumbent, run one isolated end-to-end architecture "
+            "Preplan session, validate its artifact, and exit with zero formal episodes"
+        ),
+    )
+    parser.add_argument(
+        "--preplan-timeout",
+        type=int,
+        default=7200,
+        help="wall-clock timeout in seconds for the single Preplan session",
+    )
     return parser
 
 
@@ -120,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
         assert_upstream_compatible()
         if not args.no_workload_bucketing:
             raise ValueError("repository horizon requires --no-workload-bucketing")
+        if args.preflight_only and args.preplan_only:
+            raise ValueError(
+                "--preflight-only and --preplan-only are mutually exclusive"
+            )
+        if args.preplan_timeout <= 0:
+            raise ValueError("--preplan-timeout must be positive")
         if args.sandbox_profile and args.sandbox_url:
             raise ValueError(
                 "--sandbox-profile and --sandbox-url are mutually exclusive"
@@ -273,6 +294,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"latest_version=v{latest_version(campaign.workspace)}",
                 flush=True,
             )
+            return 0
+        if args.preplan_only:
+            baseline.prepare(campaign)
+            PreplanRunner(
+                campaign=campaign,
+                manifest=manifest,
+                timeout=args.preplan_timeout,
+            ).run()
             return 0
         controller.run()
         return 0

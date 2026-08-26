@@ -3,6 +3,15 @@
 Repository Horizon v3 optimizes a locked source-repository snapshot while delegating the campaign
 state machine to the current `main` Long Horizon implementation.
 
+## Preplan-only architecture frontier
+
+The `feat/repository-horizon-v3-preplan` variant adds an explicitly pre-episode macro-planning
+boundary. `--preplan-only` prepares the locked incumbent, starts one isolated max-effort session,
+validates `plans/end_to_end_architecture_frontier.json`, copies the validated evidence to the
+canonical workspace, and exits before episode 1. The session may run bounded public GPU probes and
+small ignored prototypes, but a changed HEAD, any tracked workspace change, an invalid frontier, or
+private-evaluator evidence rejects the run.
+
 ## Design contract
 
 V3 intentionally differs from `main` in only two workflow choices:
