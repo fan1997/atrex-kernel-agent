@@ -36,6 +36,7 @@ def render_prompt(
     handoff_path: Path,
     live_memory_path: Path,
     evaluation_policy: EvaluationPolicy | None = None,
+    route_directive: str = "",
 ) -> str:
     """Render the main-compatible episode contract with two explicit opt-outs.
 
@@ -136,6 +137,7 @@ def render_prompt(
             ),
             "PUBLIC_DEV_COMMAND": public_dev,
             "REPOSITORY_SEARCH_REQUIREMENT": require_report,
+            "ROUTE_DIRECTIVE": route_directive,
             "JOURNAL_COMMAND": journal_command,
         },
     )

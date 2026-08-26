@@ -73,6 +73,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-iters", "--max-episodes", dest="max_episodes", type=int, default=20
     )
+    parser.add_argument(
+        "--episode-count",
+        type=int,
+        default=0,
+        help=(
+            "exact total number of formal episodes in this campaign; unlike "
+            "--max-iters this is independent of vN numbering"
+        ),
+    )
+    parser.add_argument(
+        "--preplan-route-id",
+        default="",
+        help=(
+            "bind every formal episode to one route from the validated canonical "
+            "Preplan frontier"
+        ),
+    )
     parser.add_argument("--token-budget", type=int, default=0)
     parser.add_argument("--max-stall", type=int, default=0)
     parser.add_argument("--handoff-resumes", type=int, default=1)
@@ -147,6 +164,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.max_episodes <= 0:
             raise ValueError("--max-episodes must be positive")
+        if args.episode_count < 0:
+            raise ValueError("--episode-count must be non-negative")
+        if args.preplan_route_id and not args.episode_count:
+            raise ValueError(
+                "--preplan-route-id requires --episode-count for an exact persistent budget"
+            )
+        if args.preplan_only and (args.preplan_route_id or args.episode_count):
+            raise ValueError(
+                "Preplan route selection and episode count apply only to formal optimization"
+            )
         if args.handoff_resumes < 0:
             raise ValueError("--handoff-resumes must be non-negative")
         if args.verify_repeats <= 0 or args.verify_run_timeout <= 0:
@@ -268,17 +295,22 @@ def main(argv: list[str] | None = None) -> int:
             manifest=manifest,
             baseline=baseline,
             verifier=RepositoryPhaseValidator(normal, bringup),
-            max_version=args.max_episodes,
+            max_episodes=args.episode_count or args.max_episodes,
+            max_version=None if args.episode_count else args.max_episodes,
             token_budget=args.token_budget,
             handoff_resumes=args.handoff_resumes,
             max_stall=args.max_stall,
             evaluation_policy=policy,
+            preplan_route_id=args.preplan_route_id,
+            total_episode_target=args.episode_count,
         )
         print(
             f"[repository-horizon] source={manifest.source_name}@{manifest.revision[:12]} "
             f"agent={args.agent_cli} policy=main-v3 platform={args.platform} "
             f"evaluation={policy.backend}/{resolved_wait_mode} "
             f"hardware={hardware} endpoint={args.sandbox_profile or args.sandbox_url or 'default'} "
+            f"route={args.preplan_route_id or 'adaptive'} "
+            f"episode_target={args.episode_count or 'version-based'} "
             f"workspace={campaign.workspace}",
             flush=True,
         )

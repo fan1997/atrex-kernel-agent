@@ -23,7 +23,7 @@ from .journal import initialize as initialize_journal
 from .journal import load as load_journal
 from .journal import sync_live_memory
 from .journal import validate_terminal
-from .models import EpisodeHandoff, SupervisorState, VerificationResult
+from .models import EpisodeHandoff, SessionResult, SupervisorState, VerificationResult
 from .session import LongSessionRunner
 from .store import CampaignStore, RUNTIME_DIR, VERIFY_DIR
 from .telemetry import summarize_episode
@@ -342,6 +342,35 @@ class LongHorizonCampaign:
     def _link_episode_runtime(self, workspace: Path) -> None:
         """Install the current main runtime assets for one isolated episode."""
         main_adapter.link_episode_runtime(self.base_campaign, workspace)
+
+    def _prepare_episode_worktree(
+        self, worktree: EpisodeWorktree, state: SupervisorState
+    ) -> None:
+        """Optional specialization hook after the clean runtime is linked."""
+        del worktree, state
+
+    def _after_episode_recorded(
+        self,
+        *,
+        worktree: EpisodeWorktree,
+        state: SupervisorState,
+        result: SessionResult,
+        journal: dict[str, Any],
+        attempt: dict[str, Any],
+        accepted: bool,
+    ) -> None:
+        """Optional specialization hook before the episode worktree is removed."""
+        del worktree, state, result, journal, attempt, accepted
+
+    def _after_recovered_outcome_recorded(
+        self,
+        *,
+        episode: int,
+        base_commit: str,
+        outcome_commit: str,
+    ) -> None:
+        """Reconcile specialization state after an interrupted outcome commit."""
+        del episode, base_commit, outcome_commit
 
     def _validate_candidate(
         self, worktree: EpisodeWorktree, candidate_commit: str
@@ -771,6 +800,40 @@ class LongHorizonCampaign:
             and attempt.get("episode_branch") == branch
             for attempt in state.attempts
         )
+        journal_path = (
+            worktree_path / RUNTIME_DIR / "journal.json"
+            if worktree_path is not None
+            else None
+        )
+        pre_agent_failure = phase == "preparing" or (
+            phase == "exploring"
+            and (journal_path is None or not journal_path.is_file())
+        )
+        if pre_agent_failure:
+            if git_head(self.workspace) != base_commit:
+                raise RuntimeError("incumbent advanced during pre-agent episode setup")
+            if worktree_path is not None and worktree_path != self.workspace.resolve():
+                registered = {
+                    Path(line.split(" ", 1)[1]).resolve()
+                    for line in git_text(
+                        self.workspace, "worktree", "list", "--porcelain"
+                    ).splitlines()
+                    if line.startswith("worktree ")
+                }
+                if worktree_path in registered:
+                    EpisodeWorktree(
+                        episode,
+                        base_commit,
+                        branch or "atrex/recovery",
+                        worktree_path,
+                    ).remove(self.workspace)
+            store.clear_active()
+            print(
+                f"[long-horizon] discarded unstarted episode={episode} "
+                f"after pre-agent setup interruption (phase={phase})",
+                flush=True,
+            )
+            return
         if git_head(self.workspace) != base_commit:
             message = git_text(self.workspace, "log", "-1", "--format=%s", check=False)
             parent = git_text(self.workspace, "rev-parse", "HEAD^", check=False)
@@ -806,6 +869,12 @@ class LongHorizonCampaign:
             if not (promoted or outcome_recorded):
                 raise RuntimeError(
                     "incumbent advanced during an interrupted episode without proof"
+                )
+            if outcome_recorded:
+                self._after_recovered_outcome_recorded(
+                    episode=episode,
+                    base_commit=base_commit,
+                    outcome_commit=git_head(self.workspace),
                 )
             if not already_recorded:
                 state.episodes = max(state.episodes, episode)
@@ -906,6 +975,11 @@ class LongHorizonCampaign:
             active["phase"] = "recorded"
             active["outcome_commit"] = outcome_commit
             store.save_active(active)
+            self._after_recovered_outcome_recorded(
+                episode=episode,
+                base_commit=base_commit,
+                outcome_commit=outcome_commit,
+            )
             attempt = {
                 "episode": episode,
                 "version": memory_version,
@@ -1043,6 +1117,7 @@ class LongHorizonCampaign:
                     "runtime linking dirtied the episode boundary: "
                     + ", ".join(unexpected)
                 )
+            self._prepare_episode_worktree(worktree, state)
             runtime = worktree.path / RUNTIME_DIR
             journal_path = runtime / "journal.json"
             handoff_path = runtime / "handoff.json"
@@ -1064,6 +1139,8 @@ class LongHorizonCampaign:
                 conversion_pending=conversion_pending,
             )
             store.write_brief(episode, prompt)
+            active["phase"] = "running"
+            store.save_active(active)
             telemetry_environment = {
                 "ATREX_TELEMETRY_TRACE": str(runtime / "telemetry.jsonl"),
                 "ATREX_TELEMETRY_CAMPAIGN_ID": str(
@@ -1288,6 +1365,14 @@ class LongHorizonCampaign:
                 )
             store.archive_attempt(episode, attempt)
             state.attempts.append(attempt)
+            self._after_episode_recorded(
+                worktree=worktree,
+                state=state,
+                result=result,
+                journal=journal,
+                attempt=attempt,
+                accepted=accepted,
+            )
             store.save_state(state)
             worktree.remove(self.workspace)
             store.clear_active()

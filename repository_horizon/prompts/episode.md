@@ -43,6 +43,8 @@ metadata are staged only at the private verification boundary.
 
 {{REPOSITORY_SEARCH_REQUIREMENT}}
 
+{{ROUTE_DIRECTIVE}}
+
 ## Execution boundary
 
 All GPU imports, compilation, correctness, benchmarking, and profiling must use the local gateway.

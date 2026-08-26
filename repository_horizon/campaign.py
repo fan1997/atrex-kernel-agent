@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +16,18 @@ from long_horizon.git_episode import (
     working_changes,
 )
 from long_horizon.models import VerificationResult
+from long_horizon.journal import load as load_journal
 from orchestrator.campaign import Campaign
 from orchestrator.constants import ATREX_PRIVATE_REFERENCE_ENV
 
 from .baseline import RepositoryBaselineManager
 from .candidate import RepositoryCandidateContract
 from .config import EvaluationPolicy
+from .fixed_route import (
+    FixedPreplanRouteStore,
+    render_fixed_route_directive,
+    validate_fixed_route_outcome,
+)
 from .manifest import RepositoryManifest
 from .prompt import render_prompt
 from .runtime import link_repository_runtime
@@ -110,6 +116,8 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
     evaluation_policy: EvaluationPolicy = field(
         default_factory=lambda: EvaluationPolicy(wait_mode="inline")
     )
+    preplan_route_id: str = ""
+    total_episode_target: int = 0
 
     @property
     def repository_manifest(self) -> RepositoryManifest:
@@ -120,6 +128,18 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
     @property
     def candidate_contract(self) -> RepositoryCandidateContract:
         return RepositoryCandidateContract(self.repository_manifest)
+
+    @property
+    def fixed_route_store(self) -> FixedPreplanRouteStore:
+        return FixedPreplanRouteStore(self.workspace)
+
+    def _configure_fixed_route(self) -> None:
+        if self.preplan_route_id:
+            self.fixed_route_store.configure(
+                route_id=self.preplan_route_id,
+                manifest=self.repository_manifest,
+                total_episode_target=self.total_episode_target,
+            )
 
     def _prepare_campaign(self) -> None:
         if self.baseline is None:
@@ -135,14 +155,25 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             # repository-backed seed.
             self.base_campaign._link_runtime()
             self.base_campaign.ensure_framework_baseline()
+            self._configure_fixed_route()
             return
         # The workspace now has a measured V0.  Delegate resume validation,
         # interrupted-change preservation, framework policy, and private-input
         # checks to the current main implementation.
         main_adapter.prepare_campaign(self.base_campaign)
+        self._configure_fixed_route()
 
     def _link_episode_runtime(self, workspace: Path) -> None:
         link_repository_runtime(self.base_campaign, workspace, self.repository_manifest)
+
+    def _prepare_episode_worktree(self, worktree: EpisodeWorktree, state) -> None:
+        del state
+        if not self.preplan_route_id:
+            self._fixed_route_wip_applied = False
+            return
+        self._fixed_route_wip_applied = self.fixed_route_store.stage_episode(
+            worktree.path
+        )
 
     def _prompt(
         self,
@@ -159,6 +190,14 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             raise RuntimeError(
                 "repository horizon does not support main's Triton-to-Gluon conversion latch"
             )
+        route_directive = ""
+        if self.preplan_route_id:
+            state = self.fixed_route_store.load()
+            route_directive = render_fixed_route_directive(
+                state,
+                self.fixed_route_store.selected_route(),
+                wip_applied=getattr(self, "_fixed_route_wip_applied", False),
+            )
         return render_prompt(
             campaign=self.base_campaign,
             manifest=self.repository_manifest,
@@ -169,6 +208,77 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             handoff_path=handoff_path,
             live_memory_path=live_memory_path,
             evaluation_policy=self.evaluation_policy,
+            route_directive=route_directive,
+        )
+
+    def _completion_check(
+        self, worktree: EpisodeWorktree, journal_path: Path, handoff
+    ) -> str:
+        diagnosis = super()._completion_check(worktree, journal_path, handoff)
+        if diagnosis or not self.preplan_route_id:
+            return diagnosis
+        try:
+            journal = load_journal(journal_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return f"cannot validate fixed-route outcome: {exc}"
+        diagnosis = validate_fixed_route_outcome(
+            journal.get("outcome"),
+            route_id=self.preplan_route_id,
+            terminal_status=handoff.status,
+            has_last_trial_commit=bool(handoff.last_trial_commit),
+        )
+        if diagnosis:
+            return diagnosis
+        if handoff.last_trial_commit:
+            violation, _ = self._validate_candidate(worktree, handoff.last_trial_commit)
+            if violation:
+                return "invalid fixed-route last_trial_commit: " + violation
+        return ""
+
+    def _after_episode_recorded(
+        self,
+        *,
+        worktree: EpisodeWorktree,
+        state,
+        result,
+        journal: dict[str, Any],
+        attempt: dict[str, Any],
+        accepted: bool,
+    ) -> None:
+        del state, attempt
+        if not self.preplan_route_id:
+            return
+        outcome = journal.get("outcome") if isinstance(journal, dict) else None
+        route = outcome.get("preplan_route") if isinstance(outcome, dict) else None
+        disposition = str(route.get("disposition")) if isinstance(route, dict) else ""
+        handoff = result.handoff
+        checkpoint = handoff.last_trial_commit if handoff else ""
+        if (
+            not checkpoint
+            and handoff
+            and handoff.status == "candidate_ready"
+            and not accepted
+        ):
+            checkpoint = handoff.candidate_commit
+        self.fixed_route_store.record_episode(
+            worktree=worktree.path,
+            base_commit=worktree.base_commit,
+            checkpoint=checkpoint,
+            accepted=accepted,
+            disposition=disposition,
+            episode=worktree.episode,
+        )
+
+    def _after_recovered_outcome_recorded(
+        self, *, episode: int, base_commit: str, outcome_commit: str
+    ) -> None:
+        if not self.preplan_route_id:
+            return
+        self.fixed_route_store.reanchor_after_recovery(
+            episode=episode,
+            base_commit=base_commit,
+            outcome_commit=outcome_commit,
+            editable_roots=tuple(self.repository_manifest.editable_workspace_roots),
         )
 
     def _validate_candidate(
@@ -250,6 +360,12 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
                 "timed_runs": self.repository_manifest.measurement.timed_runs,
             },
         }
+        if self.preplan_route_id:
+            state = self.fixed_route_store.load()
+            memory["fixed_preplan_route"] = {
+                **asdict(state),
+                "wip_patch_present": self.fixed_route_store.wip_patch_path.is_file(),
+            }
         return memory
 
     def _memory_record(

@@ -18,6 +18,23 @@ routes. The agent can validate its artifact with `python -m repository_horizon.p
 one bounded content-preserving repair session handles residual schema mistakes. A changed HEAD, any
 tracked workspace change, an invalid frontier, or private-evaluator evidence rejects the run.
 
+A validated frontier can be continued as a fixed-route campaign without rerunning Preplan:
+
+```bash
+python -m repository_horizon <the same source/evaluator arguments> \
+  --preplan-route-id <route-id> \
+  --episode-count 100 \
+  --workspace <the existing preplan campaign root>
+```
+
+The selection, artifact digest, source revision, and exact total episode target are immutable across
+restarts. Every isolated episode receives a copied, checksum-verified Preplan evidence bundle. The
+route thesis is binding, but its prototype is not: episodes may fuse or move representation cuts,
+eliminate materialization and launches, change schedules/layouts/pipelines, and add missing compute
+mechanisms while staying within the selected architecture family. Useful non-promoted checkpoints
+are carried into the next isolated episode; a rejected implementation does not authorize switching
+to another frontier route.
+
 ## Design contract
 
 V3 intentionally differs from `main` in only two workflow choices:
