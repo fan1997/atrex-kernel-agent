@@ -5,12 +5,15 @@ state machine to the current `main` Long Horizon implementation.
 
 ## Preplan-only architecture frontier
 
-The `feat/repository-horizon-v3-preplan` variant adds an explicitly pre-episode macro-planning
-boundary. `--preplan-only` prepares the locked incumbent, starts one isolated max-effort session,
-validates `plans/end_to_end_architecture_frontier.json`, copies the validated evidence to the
-canonical workspace, and exits before episode 1. The session may run bounded public GPU probes and
-small ignored prototypes, but a changed HEAD, any tracked workspace change, an invalid frontier, or
-private-evaluator evidence rejects the run.
+The `feat/repository-horizon-v3-preplan-enhance` variant adds an explicitly pre-episode
+macro-planning boundary. `--preplan-only` prepares the locked incumbent, starts one isolated
+max-effort session, validates `plans/end_to_end_architecture_frontier.json`, copies the validated
+evidence to the canonical workspace, and exits before episode 1. The session receives only
+workload-independent architecture-search laws; workload-specific obstacles and mechanisms must be
+derived from the public contract, locked source, and bounded probes. Route categories are optional
+and non-exhaustive, while runtime dispatch is represented only as a composition policy over concrete
+routes. A changed HEAD, any tracked workspace change, an invalid frontier, or private-evaluator
+evidence rejects the run.
 
 ## Design contract
 
