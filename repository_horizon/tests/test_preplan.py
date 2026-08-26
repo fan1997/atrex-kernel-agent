@@ -16,6 +16,7 @@ def cost_term(identifier: str, *, status: str = "speculative") -> dict:
         "description": f"Cost represented by {identifier}.",
         "status": status,
         "value": None if status in {"speculative", "unknown"} else 1.0,
+        "formula": None,
         "unit": "microseconds",
         "evidence": "Public source analysis or a pending public probe.",
     }
@@ -25,26 +26,49 @@ def route(identifier: str, mechanism: str) -> dict:
     return {
         "id": identifier,
         "thesis": f"Use {mechanism} to remove a documented obstacle.",
-        "implementation_graph": ["public input", mechanism, "required output"],
-        "mechanism_signature": [mechanism],
+        "implementation_graph": {
+            "input_representation": "public input",
+            "stages": [
+                {
+                    "id": f"{identifier}-stage",
+                    "operation": mechanism,
+                    "input_representation": "public input",
+                    "output_representation": "required output",
+                }
+            ],
+            "output_representation": "required output",
+        },
+        "mechanism_signature": {
+            "changed_graph_cuts": [mechanism],
+            "representation_path": ["public input", "required output"],
+            "compute_mechanism": mechanism,
+            "operator_boundary": mechanism,
+        },
         "addressed_obstacle_ids": ["obstacle-1"],
+        "bridge_assessment_ids": [],
         "changed_choices": ["Inherited boundary"],
         "prerequisites": [],
-        "cost_terms": [cost_term(f"{identifier}-cost")],
+        "cost_term_ids": ["baseline-cost"],
         "evidence_level": "speculative",
+        "evidence_scope": {
+            "exact_public_contract": False,
+            "proxy_contracts": [],
+            "explanation": "No exact-contract measurement yet.",
+        },
         "supporting_evidence": ["Public contract and locked source."],
         "contradicting_evidence": [],
         "winning_regimes": ["The obstacle dominates end-to-end cost."],
         "losing_regimes": [],
         "risks": ["The added cost may dominate."],
-        "falsification_tests": [
-            {
-                "question": "Can the graph repay its added cost?",
-                "method": "Run a bounded public probe.",
-                "success_criterion": "The end-to-end bound beats the incumbent.",
-                "failure_action": "Drop or narrow this route.",
-            }
-        ],
+        "falsification_tests": ["Run a bounded public full-path probe."],
+        "ranking_probe": {
+            "question": "Can the graph repay its added cost?",
+            "cheapest_method": "Run a bounded public probe.",
+            "status": "deferred",
+            "experiment_id": None,
+            "non_execution_reason": "Unit-test fixture has no runtime.",
+            "bound_or_contract_evidence": None,
+        },
         "search_patterns": ["an optional, non-binding pattern"],
     }
 
@@ -53,7 +77,7 @@ def valid_document() -> dict:
     routes = [route("route-a", "mechanism-a"), route("route-b", "mechanism-b")]
     ids = [item["id"] for item in routes]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "revision": 1,
         "supersedes": None,
         "objective": {
@@ -108,17 +132,44 @@ def valid_document() -> dict:
                     "evidence": "locked_source.py",
                     "blocked_capability": "An otherwise legal efficient mechanism.",
                     "removal_condition": "Change a contract-permitted graph decision.",
+                    "single_cut_justification": None,
                 }
             ],
+            "top_obstacle_ids": ["obstacle-1"],
+        },
+        "representation_bridge_analysis": {
+            "applicability": "not_applicable",
+            "non_applicability_reason": "The test fixture declares no representation mismatch.",
+            "assessments": [],
         },
         "architecture_frontier": routes,
-        "probing": {"experiments": []},
+        "probing": {
+            "experiments": [],
+            "post_probe_replan": {
+                "ranking_before": ids,
+                "ranking_after": ids,
+                "evidence_that_changed_ranking": [],
+                "route_reconsiderations": [
+                    {
+                        "route_id": item,
+                        "evidence_reviewed": "No probe in unit fixture.",
+                        "rank_effect": "Remain provisional.",
+                    }
+                    for item in ids
+                ],
+                "unresolved_decisive_probe_ids": [],
+            },
+        },
         "portfolio": {
             "ranked_route_ids": ids,
-            "primary_route_id": ids[0],
+            "performance_primary_route_id": ids[0],
+            "correctness_bridge_route_id": None,
             "hedge_route_ids": [ids[1]],
+            "ranking_status": "provisional",
             "selection_rationale": "Best evidence-adjusted end-to-end outlook.",
-            "next_experiments": [{"id": "experiment-1", "purpose": "Rank routes."}],
+            "next_experiments": [
+                {"id": "experiment-1", "purpose": "Rank routes.", "route_ids": ids}
+            ],
             "replan_triggers": ["A required mechanism is falsified."],
             "composition_policies": [],
         },
@@ -155,7 +206,9 @@ class PreplanValidationTests(unittest.TestCase):
 
     def test_requires_mechanism_distinct_routes(self) -> None:
         document = valid_document()
-        document["architecture_frontier"][1]["mechanism_signature"] = ["mechanism-a"]
+        document["architecture_frontier"][1]["mechanism_signature"] = document[
+            "architecture_frontier"
+        ][0]["mechanism_signature"]
         violations = self.validate(document)
         self.assertTrue(
             any("duplicates another route" in value for value in violations)
@@ -169,7 +222,7 @@ class PreplanValidationTests(unittest.TestCase):
 
     def test_measured_cost_requires_numeric_value(self) -> None:
         document = valid_document()
-        term = document["architecture_frontier"][0]["cost_terms"][0]
+        term = document["structural_cost_model"]["cost_terms"][0]
         term["status"] = "measured"
         term["value"] = None
         violations = self.validate(document)
@@ -200,6 +253,7 @@ class PreplanValidationTests(unittest.TestCase):
                 "input_description": "A public synthetic input.",
                 "command": "python profiles/preplan/driver.py",
                 "environment": "Public development gateway.",
+                "evidence_level": "measured",
                 "evidence": "The raw output should be persisted.",
                 "interpretation": "One route becomes less uncertain.",
                 "decision_impact": "Keep the route.",
@@ -225,6 +279,7 @@ class PreplanValidationTests(unittest.TestCase):
                 "input_description": "A public synthetic input.",
                 "command": "python profiles/preplan/driver.py",
                 "environment": "Public development gateway.",
+                "evidence_level": "measured",
                 "evidence": "profiles/preplan/probe-1.json",
                 "interpretation": "One route becomes less uncertain.",
                 "decision_impact": "Keep the route.",
@@ -259,6 +314,57 @@ class PreplanValidationTests(unittest.TestCase):
         violations = self.validate(document)
         self.assertTrue(violations)
 
+    def test_top_obstacle_requires_distinct_graph_cuts(self) -> None:
+        document = valid_document()
+        document["architecture_frontier"][1]["mechanism_signature"][
+            "changed_graph_cuts"
+        ] = ["mechanism-a"]
+        violations = self.validate(document)
+        self.assertTrue(any("two distinct graph cuts" in value for value in violations))
+
+    def test_frontier_bridge_requires_atomic_route_reference(self) -> None:
+        document = valid_document()
+        document["representation_bridge_analysis"] = {
+            "applicability": "applicable",
+            "non_applicability_reason": None,
+            "assessments": [
+                {
+                    "id": "bridge-1",
+                    "obstacle_id": "obstacle-1",
+                    "source_representation": "public input",
+                    "target_representation": "compatible input",
+                    "enabled_capability": "efficient capability",
+                    "legality": "Allowed by the public contract.",
+                    "full_path_cost_equation": "T_transform + T_compute",
+                    "cost_term_ids": ["baseline-cost"],
+                    "evidence_level": "speculative",
+                    "evidence": "Public source.",
+                    "disposition": "frontier",
+                    "decision_basis": "Needs a bounded probe.",
+                    "probe_id": None,
+                }
+            ],
+        }
+        document["portfolio"]["correctness_bridge_route_id"] = "route-b"
+        violations = self.validate(document)
+        self.assertTrue(
+            any("frontier representation bridges" in value for value in violations)
+        )
+
+    def test_exact_contract_gap_forces_provisional_ranking(self) -> None:
+        document = valid_document()
+        document["portfolio"]["ranking_status"] = "evidence_complete"
+        violations = self.validate(document)
+        self.assertTrue(any("must remain provisional" in value for value in violations))
+
+    def test_implementation_graph_must_connect(self) -> None:
+        document = valid_document()
+        document["architecture_frontier"][0]["implementation_graph"]["stages"][0][
+            "input_representation"
+        ] = "disconnected"
+        violations = self.validate(document)
+        self.assertTrue(any("does not connect" in value for value in violations))
+
     def test_probe_command_uses_manifest_source_not_a_fixed_repository(self) -> None:
         manifest = SimpleNamespace(
             source_name="example_source",
@@ -269,8 +375,12 @@ class PreplanValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             prompt = render_preplan_prompt(FakeCampaign(), manifest, Path(temp))
         self.assertIn("--input vendor/example_source", prompt)
+        self.assertIn("T_bridge = T(R1 -> R2) + T_C(R2) + T_post", prompt)
+        self.assertIn("python -m repository_horizon.preplan validate", prompt)
         self.assertNotIn("vendor/flash_attention", prompt)
         self.assertNotIn("paged representation", prompt.casefold())
+        self.assertNotIn("mudi", prompt.casefold())
+        self.assertNotIn("index_select", prompt.casefold())
 
 
 if __name__ == "__main__":

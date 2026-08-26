@@ -31,14 +31,32 @@ These laws are workload-independent. They enlarge the search space; they do not 
 3. **Remove structural obstacles.** Identify what prevents the contract from mapping efficiently to
    available hardware or software capabilities, then ask what legal graph change removes that obstacle
    and what new cost it introduces.
-4. **Account for the whole path.** Include data movement, transformation, compute, synchronization,
+4. **Test representation bridges.** If capability `C` is known to work on representation `R2` while the
+   contract supplies `R1`, explicitly evaluate a legal bridge before deciding to modify or replace `C`:
+   `T_bridge = T(R1 -> R2) + T_C(R2) + T_post`. This is a generic counterfactual, not a prescribed
+   implementation. Measure or bound the complete path, including temporary storage and launches.
+5. **Search different graph cuts.** For each top structural obstacle, construct counterfactuals that
+   remove it at materially different locations in the graph (before the blocked capability, inside it,
+   after it, or at another workload-derived cut). Do not satisfy this by renaming the same mechanism.
+   If only one cut is legal, justify that from the public contract or a derived bound.
+6. **Keep routes atomic.** One route is exactly one connected implementation graph. Phrases such as
+   “A or B”, optional mutually exclusive data paths, and unexpanded variants are separate routes, not
+   one route. Runtime selection belongs only in a later composition policy.
+7. **Account for the whole path.** Include data movement, transformation, compute, synchronization,
    workspace, launch, selection, and postprocessing costs. A locally faster stage is not an end-to-end
    improvement unless the full graph wins.
-5. **Make claims falsifiable.** Distinguish measured evidence, derived bounds, estimates, speculation,
+8. **Use evidence symmetrically.** Distinguish measured evidence, derived bounds, estimates,
+   speculation,
    and unknowns. Use the cheapest decisive probe before investing in full implementation, and do not
-   reject an architecture merely because an intentionally rough prototype is slow.
-6. **Preserve mechanism diversity.** Avoid premature convergence on the incumbent or the first plausible
+   reject an architecture merely because an intentionally rough prototype is slow. A proxy workload may
+   support a route, but cannot establish the primary route on the exact public contract. Give every
+   plausible architecture-scale route its cheapest ranking-changing probe; defer one only with an
+   explicit reason and keep the ranking provisional.
+9. **Preserve mechanism diversity.** Avoid premature convergence on the incumbent or the first plausible
    route. Retain a materially different hedge unless public evidence rules it out.
+10. **Replan after evidence.** Probe interpretation cannot lock the answer. After the bounded probes,
+    reconsider every route together, record ranking before and after, and state what evidence changed or
+    failed to change the ranking.
 
 The following are a non-exhaustive, optional, and composable thinking toolkit: changing representation
 or layout; changing operator boundaries or lifecycle; preparation followed by reuse of an available
@@ -60,10 +78,15 @@ win/loss regions, worst regressions, resource costs, and uncertainty instead of 
 
 1. Normalize the public contract and identify implementation freedoms.
 2. Build a workload-derived structural cost model and obstacle list.
-3. Generate mechanism-distinct implementation graphs without mechanically covering a taxonomy.
-4. State proof obligations and choose bounded probes that can change route ranking.
-5. Produce a primary/hedge portfolio. Treat runtime dispatch only as an optional composition policy over
-   concrete routes, never as a peer compute architecture or an empty placeholder.
+3. For each top obstacle, generate atomic, mechanism-distinct graphs at different graph cuts. Explicitly
+   perform the representation-bridge counterfactual whenever an efficient capability and the supplied
+   representation do not line up.
+4. State proof obligations. Before favoring one route, allocate each plausible route its cheapest probe
+   that could change the ranking; do not use evidence from one contract as if it measured another.
+5. After all probes, perform a fresh adversarial ranking pass over every route.
+6. Produce a portfolio that separately names the correctness bridge (when applicable), the provisional
+   or evidence-complete performance primary, and hedge routes. Runtime dispatch is only an optional
+   composition policy over concrete routes.
 
 ## Bounded probing boundary
 
@@ -92,9 +115,20 @@ Hard prohibitions:
 
 ## Required JSON contract
 
+Use `repository_horizon/prompts/preplan_schema_v3.example.json` as the concrete shape reference. Before
+stopping, run:
+
+```bash
+python -m repository_horizon.preplan validate {{ARTIFACT}}
+```
+
+Fix every reported violation without deleting substantive routes or evidence. The supervisor may start
+one bounded schema-repair session if malformed JSON still escapes this check, but that session is not
+allowed to change the architecture analysis.
+
 Write only the final JSON artifact to `{{ARTIFACT}}` plus optional ignored probing files. It must contain:
 
-- `schema_version=2`, `revision=1`, and `supersedes=null`.
+- `schema_version=3`, `revision=1`, and `supersedes=null`.
 - `objective`: `metric="end_to_end_latency"`, a non-empty mathematical `formulation`, and non-empty,
   workload-derived `decision_variables` objects with unique `name` and `description`.
 - `contract_normal_form`: non-empty `semantic`, `interface`, `policy`, and `hardware` constraint object
@@ -103,24 +137,35 @@ Write only the final JSON artifact to `{{ARTIFACT}}` plus optional ignored probi
 - `inherited_implementation_choices`: objects with `choice`, `evidence`, and `why_not_a_constraint`.
 - `unverified_assumptions`: objects with unique `id`, `statement`, `consequence_if_false`, and
   `falsification_test`.
-- `structural_cost_model`: non-empty `cost_terms` objects (`id`, `description`, `status`, `value`, `unit`,
-  `evidence`) and non-empty `obstacles` objects (`id`, `statement`, `evidence`, `blocked_capability`,
-  `removal_condition`). Evidence status is one of `measured`, `derived_bound`, `estimated`,
-  `speculative`, or `unknown`; unknown values use `null`.
+- `structural_cost_model`: centralized non-empty `cost_terms` objects (`id`, `description`, `status`,
+  `value`, optional `formula`, `unit`, `evidence`), non-empty `obstacles`, and non-empty
+  `top_obstacle_ids`. An obstacle has `id`, `statement`, `evidence`, `blocked_capability`,
+  `removal_condition`, and optional `single_cut_justification`. Evidence status is one of `measured`,
+  `derived_bound`, `estimated`, `speculative`, or `unknown`; unknown values use `null`, while a derived
+  bound may use a numeric value or a non-empty formula.
+- `representation_bridge_analysis`: `applicability` is `applicable` or `not_applicable`. When applicable,
+  provide assessments with `id`, `obstacle_id`, source and target representations, enabled capability,
+  legality, the complete-path cost equation, referenced centralized cost ids, evidence level/evidence,
+  disposition, and decision basis. A rejected bridge requires measured evidence or a derived bound; a
+  frontier bridge must be referenced by a route. When not applicable, provide a reason and no assessments.
 - `architecture_frontier`: at least two mechanism-distinct route objects. Each has `id`, `thesis`,
-  `implementation_graph`, `mechanism_signature`, `addressed_obstacle_ids`, `changed_choices`,
-  `prerequisites`, `cost_terms`, `evidence_level`, `supporting_evidence`, `contradicting_evidence`,
-  `winning_regimes`, `losing_regimes`, `risks`, and `falsification_tests`. Optional `search_patterns` are
-  descriptive only and may contain any values; no taxonomy coverage is required.
+  one connected `implementation_graph`, a structured `mechanism_signature`, `addressed_obstacle_ids`,
+  `bridge_assessment_ids`, `changed_choices`, `prerequisites`, centralized `cost_term_ids`,
+  `evidence_level`, `evidence_scope`, supporting/contradicting evidence, winning/losing regimes, risks,
+  actionable string `falsification_tests`, and a `ranking_probe`. Top obstacles need routes covering at
+  least two distinct `changed_graph_cuts`, unless the obstacle carries a public single-cut justification.
+  Optional `search_patterns` are descriptive only; no named taxonomy coverage is required.
 - `probing.experiments`: a possibly empty list. Each experiment records `id`, `kind`, `hypothesis`,
-  `status`, `method`, `input_description`, `command`, `environment`, `evidence`, `interpretation`, and
-  `decision_impact`. A measured `gpu_probe` or `micro_prototype` also records a workspace-relative
+  `status`, `method`, `input_description`, `command`, `environment`, `evidence_level`, `evidence`,
+  `interpretation`, and `decision_impact`. A completed/measured `gpu_probe` or `micro_prototype` records a workspace-relative
   `raw_output_path` under `profiles/preplan/` and its lowercase `sha256`; experiments without a raw
-  output set both fields to `null`.
-- `portfolio`: `ranked_route_ids` containing every route exactly once, a `primary_route_id`, one or more
-  distinct `hedge_route_ids`, `selection_rationale`, `next_experiments`, `replan_triggers`, and optional
-  `composition_policies`. A composition policy references at least two concrete route ids and states its
-  public selection condition, added cost, and evidence level.
+  output set both fields to `null`. `post_probe_replan` records rankings before/after, evidence that
+  changed them, reconsideration of every route, and unresolved decisive experiment ids.
+- `portfolio`: `ranked_route_ids` containing every route exactly once, a
+  `performance_primary_route_id`, `correctness_bridge_route_id` (or null when bridges do not apply), one
+  or more distinct `hedge_route_ids`, `ranking_status`, `selection_rationale`, structured
+  `next_experiments`, `replan_triggers`, and optional `composition_policies`. A route lacking evidence on
+  the exact public contract, or any deferred ranking probe, forces `ranking_status="provisional"`.
 
 Every evidence reference must be public and workspace-local. Never present an estimate or speculation as
 a measurement. Stop immediately after writing valid JSON.

@@ -1,0 +1,240 @@
+{
+  "schema_version": 3,
+  "revision": 1,
+  "supersedes": null,
+  "objective": {
+    "metric": "end_to_end_latency",
+    "formulation": "min_G,theta sum_i T_i(G, theta) over the public contract domain",
+    "decision_variables": [
+      {
+        "name": "graph_structure",
+        "description": "The contract-permitted stages and boundaries in the implementation graph."
+      }
+    ]
+  },
+  "contract_normal_form": {
+    "semantic": [{"statement": "Replace with a public semantic constraint.", "evidence": "agent_problem.json"}],
+    "interface": [{"statement": "Replace with a public interface constraint.", "evidence": "agent_problem.json"}],
+    "policy": [{"statement": "Replace with a public policy constraint.", "evidence": "agent_problem.json"}],
+    "hardware": [{"statement": "Replace with a public hardware constraint.", "evidence": "source manifest"}],
+    "implementation_freedoms": [
+      {
+        "dimension": "operator boundary",
+        "why_mutable": "The public contract does not prescribe the internal boundary.",
+        "evidence": "agent_problem.json"
+      }
+    ]
+  },
+  "inherited_implementation_choices": [
+    {
+      "choice": "The incumbent stage decomposition.",
+      "evidence": "kernel.py",
+      "why_not_a_constraint": "It is not required by the public contract."
+    }
+  ],
+  "unverified_assumptions": [
+    {
+      "id": "assumption-example",
+      "statement": "The added preparation cost can be repaid by downstream savings.",
+      "consequence_if_false": "The bridge route loses end to end.",
+      "falsification_test": "Measure or tightly bound the complete bridge plus compute path."
+    }
+  ],
+  "structural_cost_model": {
+    "cost_terms": [
+      {
+        "id": "cost-transform",
+        "description": "Representation transformation cost.",
+        "status": "unknown",
+        "value": null,
+        "formula": null,
+        "unit": "microseconds",
+        "evidence": "Pending bounded probe."
+      },
+      {
+        "id": "cost-capability",
+        "description": "Compute capability cost on its compatible representation.",
+        "status": "derived_bound",
+        "value": null,
+        "formula": "work / public_peak_throughput",
+        "unit": "microseconds",
+        "evidence": "Public operation count and hardware specification."
+      },
+      {
+        "id": "cost-direct",
+        "description": "Direct implementation full-path cost.",
+        "status": "unknown",
+        "value": null,
+        "formula": null,
+        "unit": "microseconds",
+        "evidence": "Pending bounded probe."
+      }
+    ],
+    "obstacles": [
+      {
+        "id": "obstacle-representation-mismatch",
+        "statement": "The supplied representation does not directly match an efficient capability.",
+        "evidence": "Public interface and locked source.",
+        "blocked_capability": "A workload-derived efficient capability.",
+        "removal_condition": "Change a contract-permitted graph decision.",
+        "single_cut_justification": null
+      }
+    ],
+    "top_obstacle_ids": ["obstacle-representation-mismatch"]
+  },
+  "representation_bridge_analysis": {
+    "applicability": "applicable",
+    "non_applicability_reason": null,
+    "assessments": [
+      {
+        "id": "bridge-example",
+        "obstacle_id": "obstacle-representation-mismatch",
+        "source_representation": "public input representation",
+        "target_representation": "capability-compatible representation",
+        "enabled_capability": "workload-derived efficient capability",
+        "legality": "The transformation preserves the public semantics.",
+        "full_path_cost_equation": "T_bridge = T_transform + T_capability + T_post",
+        "cost_term_ids": ["cost-transform", "cost-capability"],
+        "evidence_level": "speculative",
+        "evidence": "Public contract and locked source inspection.",
+        "disposition": "frontier",
+        "decision_basis": "The complete-path cost remains unresolved and merits a decisive probe.",
+        "probe_id": null
+      }
+    ]
+  },
+  "architecture_frontier": [
+    {
+      "id": "route-direct-example",
+      "thesis": "Remove the obstacle inside the compute stage.",
+      "implementation_graph": {
+        "input_representation": "public input representation",
+        "stages": [
+          {
+            "id": "direct-compute",
+            "operation": "One concrete direct compute mechanism.",
+            "input_representation": "public input representation",
+            "output_representation": "public output representation"
+          }
+        ],
+        "output_representation": "public output representation"
+      },
+      "mechanism_signature": {
+        "changed_graph_cuts": ["inside-compute"],
+        "representation_path": ["public input representation", "public output representation"],
+        "compute_mechanism": "direct workload-derived mechanism",
+        "operator_boundary": "single compute stage"
+      },
+      "addressed_obstacle_ids": ["obstacle-representation-mismatch"],
+      "bridge_assessment_ids": [],
+      "changed_choices": ["Inherited compute mapping"],
+      "prerequisites": [],
+      "cost_term_ids": ["cost-direct"],
+      "evidence_level": "speculative",
+      "evidence_scope": {
+        "exact_public_contract": false,
+        "proxy_contracts": [],
+        "explanation": "No exact-contract measurement has been completed."
+      },
+      "supporting_evidence": ["Public source exposes the required operations."],
+      "contradicting_evidence": [],
+      "winning_regimes": ["Direct mapping avoids preparation overhead."],
+      "losing_regimes": [],
+      "risks": ["The structural mismatch may dominate."],
+      "falsification_tests": ["Probe the direct path on the exact public contract and compare full-path latency."],
+      "ranking_probe": {
+        "question": "Can the direct graph overcome the structural mismatch?",
+        "cheapest_method": "Build the smallest legal exact-contract prototype.",
+        "status": "deferred",
+        "experiment_id": null,
+        "non_execution_reason": "Template placeholder; execute in the real analysis.",
+        "bound_or_contract_evidence": null
+      },
+      "search_patterns": []
+    },
+    {
+      "id": "route-bridge-example",
+      "thesis": "Remove the obstacle before compute through one legal representation bridge.",
+      "implementation_graph": {
+        "input_representation": "public input representation",
+        "stages": [
+          {
+            "id": "transform",
+            "operation": "Transform to one capability-compatible representation.",
+            "input_representation": "public input representation",
+            "output_representation": "capability-compatible representation"
+          },
+          {
+            "id": "compute",
+            "operation": "Invoke one workload-derived efficient capability.",
+            "input_representation": "capability-compatible representation",
+            "output_representation": "public output representation"
+          }
+        ],
+        "output_representation": "public output representation"
+      },
+      "mechanism_signature": {
+        "changed_graph_cuts": ["before-compute"],
+        "representation_path": ["public input representation", "capability-compatible representation", "public output representation"],
+        "compute_mechanism": "reuse one compatible capability",
+        "operator_boundary": "preparation then compute"
+      },
+      "addressed_obstacle_ids": ["obstacle-representation-mismatch"],
+      "bridge_assessment_ids": ["bridge-example"],
+      "changed_choices": ["Input representation at the compute boundary"],
+      "prerequisites": ["The bridge is legal for the public contract."],
+      "cost_term_ids": ["cost-transform", "cost-capability"],
+      "evidence_level": "speculative",
+      "evidence_scope": {
+        "exact_public_contract": false,
+        "proxy_contracts": [],
+        "explanation": "No exact-contract full-path measurement has been completed."
+      },
+      "supporting_evidence": ["The capability is compatible with the target representation."],
+      "contradicting_evidence": [],
+      "winning_regimes": ["Downstream savings repay transformation cost."],
+      "losing_regimes": [],
+      "risks": ["Transformation and launch costs may dominate."],
+      "falsification_tests": ["Measure transformation plus compute rather than the compute stage alone."],
+      "ranking_probe": {
+        "question": "Does the bridge win after all added costs?",
+        "cheapest_method": "Prototype and time the complete legal bridge path.",
+        "status": "deferred",
+        "experiment_id": null,
+        "non_execution_reason": "Template placeholder; execute in the real analysis.",
+        "bound_or_contract_evidence": null
+      },
+      "search_patterns": []
+    }
+  ],
+  "probing": {
+    "experiments": [],
+    "post_probe_replan": {
+      "ranking_before": ["route-direct-example", "route-bridge-example"],
+      "ranking_after": ["route-direct-example", "route-bridge-example"],
+      "evidence_that_changed_ranking": [],
+      "route_reconsiderations": [
+        {"route_id": "route-direct-example", "evidence_reviewed": "No probe yet.", "rank_effect": "Remain provisional."},
+        {"route_id": "route-bridge-example", "evidence_reviewed": "No probe yet.", "rank_effect": "Remain provisional."}
+      ],
+      "unresolved_decisive_probe_ids": []
+    }
+  },
+  "portfolio": {
+    "ranked_route_ids": ["route-direct-example", "route-bridge-example"],
+    "performance_primary_route_id": "route-direct-example",
+    "correctness_bridge_route_id": "route-bridge-example",
+    "hedge_route_ids": ["route-bridge-example"],
+    "ranking_status": "provisional",
+    "selection_rationale": "Both routes remain provisional until symmetric exact-contract probes complete.",
+    "next_experiments": [
+      {
+        "id": "next-exact-contract-probes",
+        "purpose": "Run the cheapest ranking-changing exact-contract probe for each route.",
+        "route_ids": ["route-direct-example", "route-bridge-example"]
+      }
+    ],
+    "replan_triggers": ["Any exact-contract result changes a full-path cost bound."],
+    "composition_policies": []
+  }
+}

@@ -10,10 +10,13 @@ macro-planning boundary. `--preplan-only` prepares the locked incumbent, starts 
 max-effort session, validates `plans/end_to_end_architecture_frontier.json`, copies the validated
 evidence to the canonical workspace, and exits before episode 1. The session receives only
 workload-independent architecture-search laws; workload-specific obstacles and mechanisms must be
-derived from the public contract, locked source, and bounded probes. Route categories are optional
-and non-exhaustive, while runtime dispatch is represented only as a composition policy over concrete
-routes. A changed HEAD, any tracked workspace change, an invalid frontier, or private-evaluator
-evidence rejects the run.
+derived from the public contract, locked source, and bounded probes. The schema makes representation
+bridges, alternative graph cuts, atomic implementation graphs, exact-contract evidence scope,
+per-route decisive probes, and post-probe replanning explicit. Route categories remain optional and
+non-exhaustive, while runtime dispatch is represented only as a composition policy over concrete
+routes. The agent can validate its artifact with `python -m repository_horizon.preplan validate ...`;
+one bounded content-preserving repair session handles residual schema mistakes. A changed HEAD, any
+tracked workspace change, an invalid frontier, or private-evaluator evidence rejects the run.
 
 ## Design contract
 
