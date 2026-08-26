@@ -84,9 +84,11 @@ win/loss regions, worst regressions, resource costs, and uncertainty instead of 
 4. State proof obligations. Before favoring one route, allocate each plausible route its cheapest probe
    that could change the ranking; do not use evidence from one contract as if it measured another.
 5. After all probes, perform a fresh adversarial ranking pass over every route.
-6. Produce a portfolio that separately names the correctness bridge (when applicable), the provisional
-   or evidence-complete performance primary, and hedge routes. Runtime dispatch is only an optional
-   composition policy over concrete routes.
+6. Produce a portfolio that separately names the feasibility anchor, the provisional or
+   evidence-complete performance primary, and hedge routes. These are decision roles, not three required
+   or mutually exclusive architectures: the anchor and primary may be the same route. Representation
+   bridging remains a mechanism property of a route, not a portfolio role. Runtime dispatch is only an
+   optional composition policy over concrete routes.
 
 ## Bounded probing boundary
 
@@ -128,7 +130,7 @@ allowed to change the architecture analysis.
 
 Write only the final JSON artifact to `{{ARTIFACT}}` plus optional ignored probing files. It must contain:
 
-- `schema_version=3`, `revision=1`, and `supersedes=null`.
+- `schema_version=4`, `revision=1`, and `supersedes=null`.
 - `objective`: `metric="end_to_end_latency"`, a non-empty mathematical `formulation`, and non-empty,
   workload-derived `decision_variables` objects with unique `name` and `description`.
 - `contract_normal_form`: non-empty `semantic`, `interface`, `policy`, and `hardware` constraint object
@@ -162,10 +164,12 @@ Write only the final JSON artifact to `{{ARTIFACT}}` plus optional ignored probi
   output set both fields to `null`. `post_probe_replan` records rankings before/after, evidence that
   changed them, reconsideration of every route, and unresolved decisive experiment ids.
 - `portfolio`: `ranked_route_ids` containing every route exactly once, a
-  `performance_primary_route_id`, `correctness_bridge_route_id` (or null when bridges do not apply), one
+  `feasibility_anchor_route_id`, its `feasibility_anchor_status`, a `performance_primary_route_id`, one
   or more distinct `hedge_route_ids`, `ranking_status`, `selection_rationale`, structured
-  `next_experiments`, `replan_triggers`, and optional `composition_policies`. A route lacking evidence on
-  the exact public contract, or any deferred ranking probe, forces `ranking_status="provisional"`.
+  `next_experiments`, `replan_triggers`, and optional `composition_policies`. These fields describe
+  decision roles rather than requiring three distinct routes. A demonstrated feasibility anchor needs
+  exact-contract evidence. A performance primary lacking exact-contract evidence, or any deferred
+  ranking probe, forces `ranking_status="provisional"`.
 
 Every evidence reference must be public and workspace-local. Never present an estimate or speculation as
 a measurement. Stop immediately after writing valid JSON.

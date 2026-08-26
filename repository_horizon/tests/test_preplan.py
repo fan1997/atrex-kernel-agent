@@ -77,7 +77,7 @@ def valid_document() -> dict:
     routes = [route("route-a", "mechanism-a"), route("route-b", "mechanism-b")]
     ids = [item["id"] for item in routes]
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "revision": 1,
         "supersedes": None,
         "objective": {
@@ -163,7 +163,8 @@ def valid_document() -> dict:
         "portfolio": {
             "ranked_route_ids": ids,
             "performance_primary_route_id": ids[0],
-            "correctness_bridge_route_id": None,
+            "feasibility_anchor_route_id": ids[0],
+            "feasibility_anchor_status": "provisional",
             "hedge_route_ids": [ids[1]],
             "ranking_status": "provisional",
             "selection_rationale": "Best evidence-adjusted end-to-end outlook.",
@@ -345,10 +346,19 @@ class PreplanValidationTests(unittest.TestCase):
                 }
             ],
         }
-        document["portfolio"]["correctness_bridge_route_id"] = "route-b"
         violations = self.validate(document)
         self.assertTrue(
             any("frontier representation bridges" in value for value in violations)
+        )
+
+    def test_demonstrated_feasibility_anchor_requires_exact_contract_evidence(
+        self,
+    ) -> None:
+        document = valid_document()
+        document["portfolio"]["feasibility_anchor_status"] = "demonstrated"
+        violations = self.validate(document)
+        self.assertTrue(
+            any("demonstrated feasibility anchor" in value for value in violations)
         )
 
     def test_exact_contract_gap_forces_provisional_ranking(self) -> None:

@@ -24,10 +24,10 @@ PREPLAN_ARTIFACT = PurePosixPath("plans/end_to_end_architecture_frontier.json")
 PREPLAN_PROFILE_ROOT = PurePosixPath("profiles/preplan")
 PREPLAN_PROMPT = Path(__file__).resolve().parent / "prompts" / "preplan.md"
 PREPLAN_SCHEMA_EXAMPLE = (
-    Path(__file__).resolve().parent / "prompts" / "preplan_schema_v3.example.json"
+    Path(__file__).resolve().parent / "prompts" / "preplan_schema_v4.example.json"
 )
 PREPLAN_RUNTIME_SCHEMA = PurePosixPath(
-    ".repository_horizon_runtime/preplan_schema_v3.example.json"
+    ".repository_horizon_runtime/preplan_schema_v4.example.json"
 )
 PREPLAN_RUNTIME_VALIDATOR = PurePosixPath(
     ".repository_horizon_runtime/validate_preplan.py"
@@ -42,7 +42,7 @@ FORBIDDEN_EVIDENCE_MARKERS = (
 MAX_ARTIFACT_BYTES = 256 * 1024
 MAX_PROFILE_FILES = 24
 MAX_PROFILE_BYTES = 2 * 1024 * 1024
-PREPLAN_SCHEMA_VERSION = 3
+PREPLAN_SCHEMA_VERSION = 4
 
 
 def _nonempty(value: object) -> bool:
@@ -909,35 +909,26 @@ def validate_preplan_artifact(path: Path) -> list[str]:
             violations.append(
                 "portfolio.performance_primary_route_id must reference a frontier route"
             )
-        correctness_bridge = portfolio.get("correctness_bridge_route_id")
-        if frontier_bridge_ids:
-            if (
-                not isinstance(correctness_bridge, str)
-                or correctness_bridge not in route_ids
-            ):
-                violations.append(
-                    "portfolio.correctness_bridge_route_id must reference a frontier route "
-                    "when representation bridges are applicable"
-                )
-            elif not {
-                item
-                for item in next(
-                    (
-                        route.get("bridge_assessment_ids", [])
-                        for route in routes
-                        if isinstance(route, dict)
-                        and route.get("id") == correctness_bridge
-                    ),
-                    [],
-                )
-                if isinstance(item, str)
-            }.intersection(frontier_bridge_ids):
-                violations.append(
-                    "portfolio.correctness_bridge_route_id must reference a frontier bridge assessment"
-                )
-        elif correctness_bridge is not None:
+        feasibility_anchor = portfolio.get("feasibility_anchor_route_id")
+        if (
+            not isinstance(feasibility_anchor, str)
+            or feasibility_anchor not in route_ids
+        ):
             violations.append(
-                "portfolio.correctness_bridge_route_id must be null when no bridge remains on the frontier"
+                "portfolio.feasibility_anchor_route_id must reference a frontier route"
+            )
+        feasibility_status = portfolio.get("feasibility_anchor_status")
+        if feasibility_status not in {"demonstrated", "provisional"}:
+            violations.append(
+                "portfolio.feasibility_anchor_status must be demonstrated or provisional"
+            )
+        if (
+            feasibility_status == "demonstrated"
+            and isinstance(feasibility_anchor, str)
+            and not route_evidence_scopes.get(feasibility_anchor, False)
+        ):
+            violations.append(
+                "a demonstrated feasibility anchor requires exact-public-contract evidence"
             )
         hedges = portfolio.get("hedge_route_ids")
         if (

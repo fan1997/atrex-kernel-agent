@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "revision": 1,
   "supersedes": null,
   "objective": {
@@ -223,7 +223,8 @@
   "portfolio": {
     "ranked_route_ids": ["route-direct-example", "route-bridge-example"],
     "performance_primary_route_id": "route-direct-example",
-    "correctness_bridge_route_id": "route-bridge-example",
+    "feasibility_anchor_route_id": "route-bridge-example",
+    "feasibility_anchor_status": "provisional",
     "hedge_route_ids": ["route-bridge-example"],
     "ranking_status": "provisional",
     "selection_rationale": "Both routes remain provisional until symmetric exact-contract probes complete.",
