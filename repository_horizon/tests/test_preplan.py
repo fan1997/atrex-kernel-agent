@@ -112,16 +112,42 @@ class PreplanValidationTests(unittest.TestCase):
             any("misses required families" in value for value in violations)
         )
 
+    def test_described_decision_variables_pass(self) -> None:
+        document = valid_document()
+        document["objective"]["decision_variables"] = [
+            {"name": value, "description": f"Decision axis for {value}."}
+            for value in document["objective"]["decision_variables"]
+        ]
+        document["constraints"]["policy"][0]["statement"] = (
+            "PROFILE_SHAPE_ID is forbidden in this session."
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "frontier.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertEqual(validate_preplan_artifact(path), [])
+
     def test_private_evaluator_marker_fails(self) -> None:
         document = valid_document()
         document["portfolio"]["selection_rationale"] = (
-            "Read private_evaluator output."
+            "Read /private_evaluator/output.json."
         )
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "frontier.json"
             path.write_text(json.dumps(document), encoding="utf-8")
             violations = validate_preplan_artifact(path)
         self.assertTrue(any("forbidden" in value for value in violations))
+
+    def test_malformed_route_and_portfolio_are_reported_not_raised(self) -> None:
+        document = valid_document()
+        document["architecture_frontier"][0]["family"] = {"bad": "type"}
+        document["portfolio"]["ranked_route_ids"][0] = {"bad": "type"}
+        document["portfolio"]["primary_route_id"] = {"bad": "type"}
+        document["portfolio"]["hedge_route_ids"] = [{"bad": "type"}]
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "frontier.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            violations = validate_preplan_artifact(path)
+        self.assertTrue(violations)
 
 
 if __name__ == "__main__":

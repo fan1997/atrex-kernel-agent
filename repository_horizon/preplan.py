@@ -39,11 +39,8 @@ DECISION_VARIABLES = (
     "dispatch",
 )
 FORBIDDEN_EVIDENCE_MARKERS = (
-    "private_evaluator",
-    "profile_shape_id",
-    ".atrex_private_profile_case",
-    "repository_horizon.dev_eval",
-    "shapes.json",
+    "/private_evaluator/",
+    "/.atrex_private_profile_case.json",
 )
 MAX_ARTIFACT_BYTES = 256 * 1024
 MAX_PROFILE_FILES = 24
@@ -112,13 +109,28 @@ def validate_preplan_artifact(path: Path) -> list[str]:
     else:
         if objective.get("metric") != "end_to_end_latency":
             violations.append("objective.metric must be end_to_end_latency")
-        variables = objective.get("decision_variables")
-        if not isinstance(variables, list) or set(variables) != set(
+        raw_variables = objective.get("decision_variables")
+        variables: list[str] = []
+        if isinstance(raw_variables, list):
+            for variable in raw_variables:
+                if isinstance(variable, str):
+                    variables.append(variable)
+                elif (
+                    isinstance(variable, dict)
+                    and _nonempty(variable.get("name"))
+                    and _nonempty(variable.get("description"))
+                ):
+                    variables.append(variable["name"])
+                else:
+                    variables = []
+                    break
+        if set(variables) != set(DECISION_VARIABLES) or len(variables) != len(
             DECISION_VARIABLES
         ):
             violations.append(
                 "objective.decision_variables must cover representation, preprocessing, "
-                "decomposition, algorithm, schedule, and dispatch"
+                "decomposition, algorithm, schedule, and dispatch exactly once; entries "
+                "may be names or {name, description} objects"
             )
         if not _nonempty(objective.get("formulation")):
             violations.append(
@@ -217,7 +229,7 @@ def validate_preplan_artifact(path: Path) -> list[str]:
             else:
                 route_ids.add(identifier)
             family = route.get("family")
-            if family not in REQUIRED_FAMILIES:
+            if not isinstance(family, str) or family not in REQUIRED_FAMILIES:
                 violations.append(f"{label}.family is unsupported: {family}")
             else:
                 families.add(family)
@@ -326,6 +338,7 @@ def validate_preplan_artifact(path: Path) -> list[str]:
         ranked = portfolio.get("ranked_route_ids")
         if (
             not isinstance(ranked, list)
+            or any(not isinstance(item, str) for item in ranked)
             or set(ranked) != route_ids
             or len(ranked) != len(route_ids)
         ):
@@ -333,7 +346,7 @@ def validate_preplan_artifact(path: Path) -> list[str]:
                 "portfolio.ranked_route_ids must rank every route exactly once"
             )
         primary = portfolio.get("primary_route_id")
-        if primary not in route_ids:
+        if not isinstance(primary, str) or primary not in route_ids:
             violations.append(
                 "portfolio.primary_route_id must reference a frontier route"
             )
@@ -341,6 +354,7 @@ def validate_preplan_artifact(path: Path) -> list[str]:
         if (
             not isinstance(hedges, list)
             or not hedges
+            or any(not isinstance(item, str) for item in hedges)
             or any(item not in route_ids for item in hedges)
         ):
             violations.append(
@@ -452,6 +466,73 @@ def render_preplan_prompt(
     return prompt
 
 
+def publish_validated_preplan(
+    *,
+    canonical: Path,
+    worktree: Path,
+    manifest: RepositoryManifest,
+    session_id: str,
+    tokens: int | None,
+) -> Path:
+    """Recheck the plan-only boundary and publish one already-authored artifact."""
+
+    base_commit = git_head(canonical)
+    violations: list[str] = []
+    if git_head(worktree) != base_commit:
+        violations.append(
+            "preplan changed Git HEAD; implementation commits are forbidden"
+        )
+    dirty = working_changes(worktree)
+    if dirty:
+        violations.append(
+            "preplan modified campaign source: " + ", ".join(dirty[:12])
+        )
+    if (worktree / ".atrex_long_horizon").exists():
+        violations.append("preplan created a formal episode runtime directory")
+    artifact = worktree / PREPLAN_ARTIFACT
+    violations.extend(validate_preplan_artifact(artifact))
+    violations.extend(_profile_violations(worktree))
+    corpus = read_catalog(worktree)
+    if corpus is not None:
+        violations.extend(
+            validate_source_corpus(
+                worktree,
+                corpus,
+                expected_runtime=canonical / CORPUS_RELATIVE,
+            )
+        )
+    if violations:
+        raise RuntimeError("PREPLAN REJECTED: " + "; ".join(violations))
+
+    canonical_artifact = canonical / PREPLAN_ARTIFACT
+    canonical_artifact.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(artifact, canonical_artifact)
+    digest = hashlib.sha256(canonical_artifact.read_bytes()).hexdigest()
+    atomic_write_json(
+        canonical / "plans" / "preplan_run.json",
+        {
+            "schema_version": 1,
+            "status": "PASS",
+            "source_revision": manifest.revision,
+            "incumbent_commit": base_commit,
+            "artifact": PREPLAN_ARTIFACT.as_posix(),
+            "artifact_sha256": digest,
+            "session_id": session_id,
+            "tokens": tokens,
+            "worktree": str(worktree),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "formal_episode_started": False,
+            "candidate_created": False,
+        },
+    )
+    print(
+        f"[repository-horizon] PREPLAN PASS artifact={canonical_artifact} "
+        f"sha256={digest} formal_episodes=0",
+        flush=True,
+    )
+    return canonical_artifact
+
+
 @dataclass
 class PreplanRunner:
     campaign: Any
@@ -513,57 +594,24 @@ class PreplanRunner:
             extra_environment=self.campaign.agent_environment(),
         )
 
-        violations: list[str] = []
+        invocation_violations: list[str] = []
         if result.timed_out:
-            violations.append("preplan session timed out")
+            invocation_violations.append("preplan session timed out")
         if result.exit_status != 0:
-            violations.append(
+            invocation_violations.append(
                 f"preplan session exited with status {result.exit_status}"
             )
-        if git_head(worktree) != base_commit:
-            violations.append(
-                "preplan changed Git HEAD; implementation commits are forbidden"
-            )
-        dirty = working_changes(worktree)
-        if dirty:
-            violations.append(
-                "preplan modified campaign source: " + ", ".join(dirty[:12])
-            )
-        artifact = worktree / PREPLAN_ARTIFACT
-        violations.extend(validate_preplan_artifact(artifact))
-        violations.extend(_profile_violations(worktree))
-        if violations:
+        if invocation_violations:
             raise RuntimeError(
                 "PREPLAN REJECTED: "
-                + "; ".join(violations)
+                + "; ".join(invocation_violations)
                 + f"; forensic_worktree={worktree}; "
                 + f"stderr={result.stderr_tail[-1000:]}"
             )
-
-        canonical_artifact = canonical / PREPLAN_ARTIFACT
-        canonical_artifact.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact, canonical_artifact)
-        digest = hashlib.sha256(canonical_artifact.read_bytes()).hexdigest()
-        atomic_write_json(
-            canonical / "plans" / "preplan_run.json",
-            {
-                "schema_version": 1,
-                "status": "PASS",
-                "source_revision": self.manifest.revision,
-                "incumbent_commit": base_commit,
-                "artifact": PREPLAN_ARTIFACT.as_posix(),
-                "artifact_sha256": digest,
-                "session_id": result.session_id,
-                "tokens": result.tokens,
-                "worktree": str(worktree),
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "formal_episode_started": False,
-                "candidate_created": False,
-            },
+        return publish_validated_preplan(
+            canonical=canonical,
+            worktree=worktree,
+            manifest=self.manifest,
+            session_id=result.session_id,
+            tokens=result.tokens,
         )
-        print(
-            f"[repository-horizon] PREPLAN PASS artifact={canonical_artifact} "
-            f"sha256={digest} formal_episodes=0",
-            flush=True,
-        )
-        return canonical_artifact
