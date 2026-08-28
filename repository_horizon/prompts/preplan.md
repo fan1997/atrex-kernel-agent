@@ -18,6 +18,10 @@ Read `agent_problem.json`, the incumbent adapter and implementation, the source 
 bounded corpus. Treat the public semantic contract as authoritative. Do not infer hidden cases or search
 outside the workspace.
 
+## Campaign-specific public directives
+
+{{NOTES}}
+
 ## General architecture-search laws
 
 These laws are workload-independent. They enlarge the search space; they do not prescribe an answer.

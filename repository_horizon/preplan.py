@@ -1124,6 +1124,7 @@ def render_preplan_prompt(
         "SOURCE_CORPUS": (
             CORPUS_RELATIVE if read_catalog(workspace) is not None else "unavailable"
         ),
+        "NOTES": campaign.notes,
         "ARTIFACT": PREPLAN_ARTIFACT.as_posix(),
         "SCHEMA_EXAMPLE": PREPLAN_RUNTIME_SCHEMA.as_posix(),
         "VALIDATOR_COMMAND": (
