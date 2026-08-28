@@ -161,6 +161,16 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
         return RepositoryStrategyStore(self.workspace)
 
     def _prepare_episode_worktree(self, worktree: EpisodeWorktree, state) -> None:
+        # Outcome commits normally advance only supervisor-owned memory.  Older
+        # versions could leave a carried architecture patch anchored to the
+        # preceding commit after an invalid handoff, making every subsequent
+        # pre-agent setup fail before the strategy hook had a chance to repair it.
+        # Reconcile that safe metadata-only transition before applying the patch.
+        self._reanchor_architecture_wip(
+            episode=worktree.episode,
+            outcome_commit=worktree.base_commit,
+            event="architecture_wip_reanchored_before_episode",
+        )
         strategy = self.strategy_store.enter_if_needed(
             episode=worktree.episode,
             consecutive_without_promotion=state.consecutive_without_promotion,
@@ -271,6 +281,26 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
     ) -> None:
         del attempt
         store = self.strategy_store
+        handoff = result.handoff
+        checkpoint = (
+            handoff.last_trial_commit
+            if handoff and handoff.last_trial_commit
+            else (
+                handoff.candidate_commit
+                if handoff and handoff.status == "candidate_ready" and not accepted
+                else ""
+            )
+        )
+        if not accepted and not checkpoint:
+            # An invalid/missing handoff still creates a canonical outcome commit.
+            # Preserve any previously validated WIP patch across that metadata-only
+            # commit instead of leaving it anchored to the old incumbent forever.
+            self._reanchor_architecture_wip(
+                episode=worktree.episode,
+                expected_base_commit=worktree.base_commit,
+                outcome_commit=git_head(self.workspace),
+                event="architecture_wip_reanchored_after_uncheckpointed_outcome",
+            )
         strategy = store.load()
         if strategy.mode != "architecture":
             return
@@ -299,14 +329,6 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
                 "disposition": disposition,
                 "accepted": accepted,
             }
-        )
-        last_trial = result.handoff.last_trial_commit if result.handoff else ""
-        checkpoint = last_trial or (
-            result.handoff.candidate_commit
-            if result.handoff
-            and result.handoff.status == "candidate_ready"
-            and not accepted
-            else ""
         )
         if checkpoint:
             completed = subprocess.run(
@@ -352,12 +374,13 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             strategy.review_required = True
         store.save(strategy)
 
-    def _after_recovered_outcome_recorded(
+    def _reanchor_architecture_wip(
         self,
         *,
         episode: int,
-        base_commit: str,
         outcome_commit: str,
+        event: str,
+        expected_base_commit: str = "",
     ) -> None:
         store = self.strategy_store
         strategy = store.load()
@@ -365,17 +388,34 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             return
         if strategy.wip_base_commit == outcome_commit:
             return
-        if strategy.wip_base_commit != base_commit:
+        old_base = strategy.wip_base_commit
+        if not old_base:
             raise RuntimeError(
-                "cannot re-anchor architecture WIP after recovery: its recorded "
-                "base does not match the interrupted episode base"
+                "cannot re-anchor architecture WIP without its recorded base"
+            )
+        if expected_base_commit and old_base != expected_base_commit:
+            raise RuntimeError(
+                "cannot re-anchor architecture WIP after outcome: its recorded "
+                "base does not match the episode base"
+            )
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", old_base, outcome_commit],
+            cwd=str(self.workspace),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if ancestor.returncode != 0:
+            raise RuntimeError(
+                "cannot re-anchor architecture WIP after outcome: the recorded "
+                "base is not an ancestor of the incumbent"
             )
         completed = subprocess.run(
             [
                 "git",
                 "diff",
                 "--quiet",
-                base_commit,
+                old_base,
                 outcome_commit,
                 "--",
                 *self.repository_manifest.editable_workspace_roots,
@@ -385,24 +425,38 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
         )
         if completed.returncode == 1:
             raise RuntimeError(
-                "cannot re-anchor architecture WIP after recovery: editable "
+                "cannot re-anchor architecture WIP after outcome: editable "
                 "repository roots changed"
             )
         if completed.returncode != 0:
             raise RuntimeError(
                 "cannot verify editable repository roots while re-anchoring "
-                "architecture WIP after recovery"
+                "architecture WIP after outcome"
             )
         strategy.wip_base_commit = outcome_commit
         strategy.history.append(
             {
-                "event": "architecture_wip_reanchored_after_recovery",
+                "event": event,
                 "episode": episode,
-                "old_base_commit": base_commit,
+                "old_base_commit": old_base,
                 "new_base_commit": outcome_commit,
             }
         )
         store.save(strategy)
+
+    def _after_recovered_outcome_recorded(
+        self,
+        *,
+        episode: int,
+        base_commit: str,
+        outcome_commit: str,
+    ) -> None:
+        self._reanchor_architecture_wip(
+            episode=episode,
+            expected_base_commit=base_commit,
+            outcome_commit=outcome_commit,
+            event="architecture_wip_reanchored_after_recovery",
+        )
 
     def _validate_candidate(
         self, worktree: EpisodeWorktree, candidate_commit: str

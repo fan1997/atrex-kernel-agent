@@ -183,6 +183,176 @@ class RepositoryV3Tests(unittest.TestCase):
                 )
             self.assertEqual(controller.strategy_store.load().wip_base_commit, base)
 
+    def test_invalid_handoff_outcome_reanchors_existing_architecture_wip(
+        self,
+    ) -> None:
+        manifest = load_manifest(MANIFEST)
+        relative = f"{manifest.editable_workspace_roots[0]}/kernel.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            init_repo(workspace)
+            source = workspace / relative
+            source.parent.mkdir(parents=True)
+            source.write_text("VALUE = 1\n", encoding="utf-8")
+            run_git(workspace, "add", ".")
+            run_git(workspace, "commit", "-m", "repository baseline")
+            base = git_head(workspace)
+
+            trial = EpisodeWorktree.create(
+                workspace, 1, base, root=root / "trial-worktrees"
+            )
+            trial_source = trial.path / relative
+            trial_source.write_text("VALUE = 2\n", encoding="utf-8")
+            run_git(trial.path, "add", relative)
+            run_git(trial.path, "commit", "-m", "architecture checkpoint")
+            checkpoint = git_head(trial.path)
+            patch_bytes = subprocess.run(
+                ["git", "diff", "--binary", base, checkpoint, "--"],
+                cwd=str(trial.path),
+                check=True,
+                capture_output=True,
+            ).stdout
+
+            controller = RepositoryHorizonCampaign(
+                base_campaign=SimpleNamespace(workspace=workspace),
+                manifest=manifest,
+            )
+            controller.strategy_store.save(
+                ArchitectureStrategyState(
+                    mode="architecture",
+                    commitment_remaining=2,
+                    wip_base_commit=base,
+                    wip_source_commit=checkpoint,
+                    wip_patch_sha256=hashlib.sha256(patch_bytes).hexdigest(),
+                )
+            )
+            controller.strategy_store.wip_patch_path.write_bytes(patch_bytes)
+
+            memory = workspace / "memory"
+            memory.mkdir()
+            (memory / "v1.json").write_text("{}\n", encoding="utf-8")
+            run_git(workspace, "add", "memory/v1.json")
+            run_git(
+                workspace,
+                "commit",
+                "-m",
+                "v1: long-horizon episode 1 invalid_handoff",
+            )
+            outcome_head = git_head(workspace)
+
+            controller._after_episode_recorded(
+                worktree=trial,
+                state=SupervisorState(),
+                result=SimpleNamespace(handoff=None),
+                journal={
+                    "outcome": {
+                        "architecture": {
+                            "direction_id": "split-kv",
+                            "thesis": "parallel KV work",
+                            "disposition": "continue",
+                        }
+                    }
+                },
+                attempt={"status": "invalid_handoff"},
+                accepted=False,
+            )
+
+            saved = controller.strategy_store.load()
+            self.assertEqual(saved.wip_base_commit, outcome_head)
+            self.assertEqual(saved.wip_source_commit, checkpoint)
+            self.assertEqual(
+                saved.history[-1]["event"],
+                "architecture_episode_recorded",
+            )
+            self.assertEqual(
+                saved.history[-2]["event"],
+                "architecture_wip_reanchored_after_uncheckpointed_outcome",
+            )
+            next_worktree = EpisodeWorktree.create(
+                workspace, 2, outcome_head, root=root / "worktrees"
+            )
+            self.assertTrue(
+                controller.strategy_store.apply_wip(next_worktree.path, saved)
+            )
+            self.assertEqual(
+                (next_worktree.path / relative).read_text(encoding="utf-8"),
+                "VALUE = 2\n",
+            )
+            next_worktree.remove(workspace)
+            trial.remove(workspace)
+
+    def test_prepare_episode_repairs_legacy_metadata_only_wip_mismatch(
+        self,
+    ) -> None:
+        manifest = load_manifest(MANIFEST)
+        relative = f"{manifest.editable_workspace_roots[0]}/kernel.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            init_repo(workspace)
+            source = workspace / relative
+            source.parent.mkdir(parents=True)
+            source.write_text("VALUE = 1\n", encoding="utf-8")
+            run_git(workspace, "add", ".")
+            run_git(workspace, "commit", "-m", "repository baseline")
+            base = git_head(workspace)
+
+            trial = EpisodeWorktree.create(
+                workspace, 1, base, root=root / "trial-worktrees"
+            )
+            trial_source = trial.path / relative
+            trial_source.write_text("VALUE = 2\n", encoding="utf-8")
+            run_git(trial.path, "add", relative)
+            run_git(trial.path, "commit", "-m", "architecture checkpoint")
+            checkpoint = git_head(trial.path)
+            patch_bytes = subprocess.run(
+                ["git", "diff", "--binary", base, checkpoint, "--"],
+                cwd=str(trial.path),
+                check=True,
+                capture_output=True,
+            ).stdout
+
+            controller = RepositoryHorizonCampaign(
+                base_campaign=SimpleNamespace(workspace=workspace),
+                manifest=manifest,
+            )
+            controller.strategy_store.save(
+                ArchitectureStrategyState(
+                    mode="architecture",
+                    commitment_remaining=2,
+                    wip_base_commit=base,
+                    wip_source_commit=checkpoint,
+                    wip_patch_sha256=hashlib.sha256(patch_bytes).hexdigest(),
+                )
+            )
+            controller.strategy_store.wip_patch_path.write_bytes(patch_bytes)
+
+            memory = workspace / "memory"
+            memory.mkdir()
+            (memory / "v1.json").write_text("{}\n", encoding="utf-8")
+            run_git(workspace, "add", "memory/v1.json")
+            run_git(workspace, "commit", "-m", "metadata-only outcome")
+            outcome_head = git_head(workspace)
+            next_worktree = EpisodeWorktree.create(
+                workspace, 2, outcome_head, root=root / "worktrees"
+            )
+
+            controller._prepare_episode_worktree(next_worktree, SupervisorState())
+
+            saved = controller.strategy_store.load()
+            self.assertEqual(saved.wip_base_commit, outcome_head)
+            self.assertEqual(
+                saved.history[-1]["event"],
+                "architecture_wip_reanchored_before_episode",
+            )
+            self.assertEqual(
+                (next_worktree.path / relative).read_text(encoding="utf-8"),
+                "VALUE = 2\n",
+            )
+            next_worktree.remove(workspace)
+            trial.remove(workspace)
+
     def test_pre_agent_setup_interruption_does_not_consume_an_episode(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
