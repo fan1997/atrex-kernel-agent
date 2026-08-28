@@ -304,6 +304,21 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
         strategy = store.load()
         if strategy.mode != "architecture":
             return
+        if handoff is None:
+            # The journal and its architecture outcome are agent-authored evidence,
+            # but a failed terminal handoff did not pass the protocol gate.  Keep
+            # the last validated direction and WIP paired instead of combining an
+            # untrusted new direction with the previous episode's patch.
+            strategy.history.append(
+                {
+                    "event": "architecture_episode_invalid_handoff_ignored",
+                    "episode": worktree.episode,
+                    "preserved_direction_id": strategy.active_direction_id,
+                    "preserved_wip_source_commit": strategy.wip_source_commit,
+                }
+            )
+            store.save(strategy)
+            return
         architecture_map, diagnosis = load_architecture_map(
             worktree.path / ARCHITECTURE_MAP_WORKTREE_PATH
         )

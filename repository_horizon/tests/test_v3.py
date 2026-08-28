@@ -222,6 +222,8 @@ class RepositoryV3Tests(unittest.TestCase):
                 ArchitectureStrategyState(
                     mode="architecture",
                     commitment_remaining=2,
+                    active_direction_id="prior-direction",
+                    active_thesis="prior validated thesis",
                     wip_base_commit=base,
                     wip_source_commit=checkpoint,
                     wip_patch_sha256=hashlib.sha256(patch_bytes).hexdigest(),
@@ -261,9 +263,11 @@ class RepositoryV3Tests(unittest.TestCase):
             saved = controller.strategy_store.load()
             self.assertEqual(saved.wip_base_commit, outcome_head)
             self.assertEqual(saved.wip_source_commit, checkpoint)
+            self.assertEqual(saved.active_direction_id, "prior-direction")
+            self.assertEqual(saved.active_thesis, "prior validated thesis")
             self.assertEqual(
                 saved.history[-1]["event"],
-                "architecture_episode_recorded",
+                "architecture_episode_invalid_handoff_ignored",
             )
             self.assertEqual(
                 saved.history[-2]["event"],
