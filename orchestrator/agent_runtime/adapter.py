@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
@@ -403,6 +404,13 @@ class QoderAdapter(ClaudeLikeAdapter):
         ]
         if settings:
             command += ["--settings", settings]
+        context_window = os.environ.get("ATREX_QODER_CONTEXT_WINDOW", "").strip()
+        if context_window:
+            if not context_window.isdigit() or int(context_window) <= 0:
+                raise ValueError(
+                    "ATREX_QODER_CONTEXT_WINDOW must be a positive integer"
+                )
+            command += ["--context-window", context_window]
         command.append(prompt)
         return command
 
