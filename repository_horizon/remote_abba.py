@@ -116,6 +116,11 @@ def main() -> int:
             cache = cache_root / revision
             cache.mkdir(parents=True, exist_ok=True)
             env["CUTE_DSL_CACHE_DIR"] = str(cache / "cute")
+            # The evaluator starts one fresh Python/CUDA process per shape.  Keep
+            # the persistent CuTe artifact cache enabled for every ABBA arm so
+            # incumbent and candidate pay the same compilation policy while
+            # reusing artifacts across shapes and repeats.
+            env["FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED"] = "1"
             env["TRITON_CACHE_DIR"] = str(cache / "triton")
             env["TMPDIR"] = str(cache / "tmp")
             Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
