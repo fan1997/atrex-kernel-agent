@@ -338,6 +338,8 @@ class FixedPreplanRouteStore:
         accepted: bool,
         disposition: str,
         episode: int,
+        outcome_commit: str = "",
+        editable_roots: tuple[str, ...] = (),
     ) -> None:
         state = self.load()
         if accepted or disposition == "implementation_refuted":
@@ -368,19 +370,37 @@ class FixedPreplanRouteStore:
                 "timestamp": _utc_now(),
             }
         )
+        if (
+            not accepted
+            and disposition != "implementation_refuted"
+            and not checkpoint
+        ):
+            self._reanchor_wip(
+                state=state,
+                episode=episode,
+                base_commit=base_commit,
+                outcome_commit=outcome_commit,
+                editable_roots=editable_roots,
+                event="fixed_route_wip_reanchored_after_outcome",
+            )
         self.save(state)
 
-    def reanchor_after_recovery(
+    def _reanchor_wip(
         self,
         *,
+        state: FixedRouteState,
         episode: int,
         base_commit: str,
         outcome_commit: str,
         editable_roots: tuple[str, ...],
-    ) -> None:
-        state = self.load()
-        if not self.wip_patch_path.is_file() or state.wip_base_commit == outcome_commit:
-            return
+        event: str,
+    ) -> bool:
+        if (
+            not outcome_commit
+            or not self.wip_patch_path.is_file()
+            or state.wip_base_commit == outcome_commit
+        ):
+            return False
         if state.wip_base_commit != base_commit:
             raise RuntimeError("cannot re-anchor fixed-route WIP: base commit mismatch")
         unchanged = subprocess.run(
@@ -403,14 +423,34 @@ class FixedPreplanRouteStore:
         state.wip_base_commit = outcome_commit
         state.history.append(
             {
-                "event": "fixed_route_wip_reanchored_after_recovery",
+                "event": event,
                 "episode": episode,
                 "old_base_commit": base_commit,
                 "new_base_commit": outcome_commit,
                 "timestamp": _utc_now(),
             }
         )
-        self.save(state)
+        return True
+
+    def reanchor_after_recovery(
+        self,
+        *,
+        episode: int,
+        base_commit: str,
+        outcome_commit: str,
+        editable_roots: tuple[str, ...],
+    ) -> None:
+        state = self.load()
+        changed = self._reanchor_wip(
+            state=state,
+            episode=episode,
+            base_commit=base_commit,
+            outcome_commit=outcome_commit,
+            editable_roots=editable_roots,
+            event="fixed_route_wip_reanchored_after_recovery",
+        )
+        if changed:
+            self.save(state)
 
     def selected_route(self) -> dict[str, Any]:
         return json.loads(

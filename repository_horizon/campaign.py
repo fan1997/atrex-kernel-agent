@@ -245,7 +245,7 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
         attempt: dict[str, Any],
         accepted: bool,
     ) -> None:
-        del state, attempt
+        del state
         if not self.preplan_route_id:
             return
         outcome = journal.get("outcome") if isinstance(journal, dict) else None
@@ -264,6 +264,8 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
             worktree=worktree.path,
             base_commit=worktree.base_commit,
             checkpoint=checkpoint,
+            outcome_commit=str(attempt.get("outcome_commit") or ""),
+            editable_roots=tuple(self.repository_manifest.editable_workspace_roots),
             accepted=accepted,
             disposition=disposition,
             episode=worktree.episode,
