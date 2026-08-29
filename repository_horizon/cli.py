@@ -20,6 +20,7 @@ from .config import EvaluationPolicy, endpoint_is_local
 from .manifest import load_manifest
 from .preplan import PreplanRunner
 from .support_wheel import canonical_distribution
+from .transport import AGATE_MAX_JOB_TIMEOUT_SECONDS
 from .verifier import RepositoryABBAValidator, RepositoryPhaseValidator
 
 
@@ -178,6 +179,14 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--handoff-resumes must be non-negative")
         if args.verify_repeats <= 0 or args.verify_run_timeout <= 0:
             raise ValueError("verification repeats/timeouts must be positive")
+        if (
+            args.evaluation_backend == "agate"
+            and not 1 <= args.sandbox_timeout <= AGATE_MAX_JOB_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "--sandbox-timeout must be in Agate's supported range "
+                f"1..{AGATE_MAX_JOB_TIMEOUT_SECONDS} seconds"
+            )
         if (
             2 * args.verify_repeats * args.verify_run_timeout + 30
             > args.sandbox_timeout

@@ -15,6 +15,7 @@ from .config import endpoint_is_local
 ABBA_PREFIX = "__ATREX_LONG_HORIZON_ABBA_RESULT__="
 TERMINAL_JOB_STATUSES = frozenset({"succeeded", "failed", "cancelled", "timed_out"})
 _LOCAL_PROCESSES: dict[str, subprocess.Popen] = {}
+AGATE_MAX_JOB_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,11 @@ def submit_agate_dev(
     intent: str = "custom_harness",
     note: str = "repository horizon same-allocation ABBA verification",
 ) -> PendingAgateJob:
+    if not 1 <= job_timeout <= AGATE_MAX_JOB_TIMEOUT_SECONDS:
+        raise ValueError(
+            "Agate job timeout must be in the service-supported range "
+            f"1..{AGATE_MAX_JOB_TIMEOUT_SECONDS} seconds; got {job_timeout}"
+        )
     local_python = os.environ.get("ATREX_LOCAL_PYTHON", "")
     if local_python and endpoint_is_local(url, hardware):
         parsed = shlex.split(remote_command)

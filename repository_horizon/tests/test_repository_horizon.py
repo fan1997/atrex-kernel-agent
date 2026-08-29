@@ -25,6 +25,7 @@ from repository_horizon.dev_eval import _require_reconnaissance
 from repository_horizon.baseline import RepositoryBaselineManager
 from repository_horizon.manifest import RuntimeSupportWheel, load_manifest
 from repository_horizon.policy import install_repository_policy
+from repository_horizon.persistent_run_eval import _run_single_shape_in_process
 from repository_horizon.repository_profile import _profile_target_python
 from repository_horizon.reconnaissance import (
     REPORT_RELATIVE,
@@ -680,6 +681,50 @@ class SeedAndStagingTests(unittest.TestCase):
             self.assertEqual(
                 (stage / snapshot).read_text(encoding="utf-8"), "VALUE = 2\n"
             )
+            scripts = stage / "runtime" / "atrex-bench" / "scripts"
+            self.assertEqual(
+                (scripts / "_run_eval_official.py").read_text(encoding="utf-8"),
+                "# fixture\n",
+            )
+            self.assertIn(
+                "_run_single_shape_in_process",
+                (scripts / "run_eval.py").read_text(encoding="utf-8"),
+            )
+
+    def test_persistent_shape_worker_uses_official_body_and_converters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            results = Path(temp)
+
+            def run_shape(*, shape_result_path: Path, shape_id: str, **_kwargs) -> None:
+                shape_result_path.write_text(
+                    json.dumps(
+                        {
+                            "compile_succeeded": True,
+                            "correctness": {"shape": shape_id},
+                            "performance": {"latency": 12.5},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            official = SimpleNamespace(
+                _run_single_shape_main=run_shape,
+                _load_shape_result_payload=lambda path: json.loads(
+                    path.read_text(encoding="utf-8")
+                ),
+                _correctness_from_payload=lambda value: ("correct", value),
+                _performance_from_payload=lambda value: ("perf", value),
+                _subworker_failure_results=lambda **kwargs: ("failed", kwargs),
+            )
+            correctness, performance, compiled = _run_single_shape_in_process(
+                official,
+                shape_results_dir=results,
+                shape_id="17",
+                validation_mode="full",
+            )
+            self.assertEqual(correctness, ("correct", {"shape": "17"}))
+            self.assertEqual(performance, ("perf", {"latency": 12.5}))
+            self.assertTrue(compiled)
 
     def test_agate_payload_can_be_nested_in_json_output(self) -> None:
         payload = {"schema_version": 1, "runs": [], "error": None}
@@ -709,6 +754,16 @@ class SeedAndStagingTests(unittest.TestCase):
         self.assertIn("--no-wait", command)
         self.assertNotIn("--wait-timeout", command)
         self.assertNotIn("--wait", command)
+
+    def test_agate_development_rejects_timeout_above_service_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "1..600"):
+            submit_agate_dev(
+                Path("/tmp/stage"),
+                hardware="L20D",
+                profile="prod",
+                url="",
+                job_timeout=601,
+            )
 
     def test_local_agate_development_honors_pinned_python(self) -> None:
         completed = subprocess.CompletedProcess(
