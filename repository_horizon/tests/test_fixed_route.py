@@ -193,6 +193,125 @@ class FixedPreplanRouteTests(unittest.TestCase):
             next_trial.remove(workspace)
             trial.remove(workspace)
 
+    def test_existing_wip_is_reanchored_after_memory_only_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace, manifest = self._workspace(root)
+            relative = Path(manifest.editable_workspace_roots[0]) / "route.py"
+            editable = workspace / relative
+            editable.parent.mkdir(parents=True)
+            editable.write_text("VALUE = 1\n", encoding="utf-8")
+            run_git(workspace, "add", str(relative))
+            run_git(workspace, "commit", "-m", "add editable source")
+            base = git_head(workspace)
+            store = FixedPreplanRouteStore(workspace)
+            store.configure(
+                route_id="route-b", manifest=manifest, total_episode_target=100
+            )
+
+            first = EpisodeWorktree.create(
+                workspace, 1, base, root=root / "episode-worktrees"
+            )
+            (first.path / relative).write_text("VALUE = 2\n", encoding="utf-8")
+            run_git(first.path, "add", str(relative))
+            run_git(first.path, "commit", "-m", "fixed-route checkpoint")
+            checkpoint = git_head(first.path)
+            store.record_episode(
+                worktree=first.path,
+                base_commit=base,
+                checkpoint=checkpoint,
+                accepted=False,
+                disposition="continue",
+                episode=1,
+            )
+
+            second = EpisodeWorktree.create(
+                workspace, 2, base, root=root / "episode-worktrees"
+            )
+            self.assertTrue(store.stage_episode(second.path))
+            memory = workspace / "memory" / "v2.json"
+            memory.parent.mkdir()
+            memory.write_text("{}\n", encoding="utf-8")
+            run_git(workspace, "add", str(memory.relative_to(workspace)))
+            run_git(workspace, "commit", "-m", "record invalid handoff")
+            outcome_commit = git_head(workspace)
+
+            store.record_episode(
+                worktree=second.path,
+                base_commit=base,
+                checkpoint="",
+                outcome_commit=outcome_commit,
+                editable_roots=manifest.editable_workspace_roots,
+                accepted=False,
+                disposition="",
+                episode=2,
+            )
+            state = store.load()
+            self.assertEqual(state.wip_base_commit, outcome_commit)
+            self.assertEqual(state.wip_source_commit, checkpoint)
+            self.assertEqual(
+                state.history[-1]["event"],
+                "fixed_route_wip_reanchored_after_outcome",
+            )
+
+            third = EpisodeWorktree.create(
+                workspace, 3, outcome_commit, root=root / "episode-worktrees"
+            )
+            self.assertTrue(store.stage_episode(third.path))
+            self.assertEqual((third.path / relative).read_text(), "VALUE = 2\n")
+            third.remove(workspace)
+            second.remove(workspace)
+            first.remove(workspace)
+
+    def test_wip_reanchor_rejects_editable_source_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace, manifest = self._workspace(root)
+            relative = Path(manifest.editable_workspace_roots[0]) / "route.py"
+            editable = workspace / relative
+            editable.parent.mkdir(parents=True)
+            editable.write_text("VALUE = 1\n", encoding="utf-8")
+            run_git(workspace, "add", str(relative))
+            run_git(workspace, "commit", "-m", "add editable source")
+            base = git_head(workspace)
+            store = FixedPreplanRouteStore(workspace)
+            store.configure(
+                route_id="route-b", manifest=manifest, total_episode_target=100
+            )
+
+            trial = EpisodeWorktree.create(
+                workspace, 1, base, root=root / "episode-worktrees"
+            )
+            (trial.path / relative).write_text("VALUE = 2\n", encoding="utf-8")
+            run_git(trial.path, "add", str(relative))
+            run_git(trial.path, "commit", "-m", "fixed-route checkpoint")
+            checkpoint = git_head(trial.path)
+            store.record_episode(
+                worktree=trial.path,
+                base_commit=base,
+                checkpoint=checkpoint,
+                accepted=False,
+                disposition="continue",
+                episode=1,
+            )
+
+            editable.write_text("VALUE = 99\n", encoding="utf-8")
+            run_git(workspace, "add", str(relative))
+            run_git(workspace, "commit", "-m", "change editable source")
+            with self.assertRaisesRegex(RuntimeError, "editable source changed"):
+                store.record_episode(
+                    worktree=trial.path,
+                    base_commit=base,
+                    checkpoint="",
+                    outcome_commit=git_head(workspace),
+                    editable_roots=manifest.editable_workspace_roots,
+                    accepted=False,
+                    disposition="",
+                    episode=2,
+                )
+            self.assertEqual(store.load().wip_base_commit, base)
+            trial.remove(workspace)
+
 
 if __name__ == "__main__":
     unittest.main()
