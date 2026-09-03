@@ -170,8 +170,9 @@ class LongSessionRunner:
                 turn_prompt = (
                     "Continue the same long-horizon optimization episode. The previous turn did "
                     f"not satisfy the terminal contract: {diagnosis}. Resume concrete engineering "
-                    "work from the current Git worktree. Candidate commits may contain only "
-                    "kernel.py; leave all evidence uncommitted. Do not merely explain the problem. "
+                    "work from the current Git worktree. Candidate commits must obey the "
+                    "episode-specific editable-path contract; leave all evidence uncommitted. "
+                    "Do not merely explain the problem. "
                     "Before stopping, finalize the episode journal and atomically publish a valid "
                     "handoff."
                 )
@@ -312,8 +313,13 @@ class LongSessionRunner:
                     if self.agent_cli == "claude"
                     else ""
                 )
+                qoder_interrupted = self.agent_cli == "qodercli"
                 can_resume = (
-                    (externally_terminated or bool(transient_api_error))
+                    (
+                        externally_terminated
+                        or bool(transient_api_error)
+                        or qoder_interrupted
+                    )
                     and not dependency_terminated
                     and active_session_id
                     and main_adapter.supports_same_session_resume(self.agent_cli)
@@ -324,7 +330,11 @@ class LongSessionRunner:
                         f"Claude coding session hit transient {transient_api_error} before "
                         "publishing a valid handoff"
                         if transient_api_error
-                        else "coding session received SIGTERM before publishing a valid handoff"
+                        else (
+                            "Qoder coding session exited before publishing a valid handoff"
+                            if qoder_interrupted
+                            else "coding session received SIGTERM before publishing a valid handoff"
+                        )
                     )
                     continue
                 break

@@ -30,6 +30,9 @@ from .support_wheel import (
     wheel_sha256,
 )
 
+CAMPAIGN_GIT_USER_NAME = "atrex-long-horizon"
+CAMPAIGN_GIT_USER_EMAIL = "atrex-long-horizon@local"
+
 
 def _git(source: Path, *args: str, binary: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -39,6 +42,29 @@ def _git(source: Path, *args: str, binary: bool = False) -> subprocess.Completed
         capture_output=True,
         text=not binary,
     )
+
+
+def _ensure_campaign_git_identity(workspace: Path) -> None:
+    """Install a repository-local identity when no inherited identity exists."""
+    for key, value in (
+        ("user.name", CAMPAIGN_GIT_USER_NAME),
+        ("user.email", CAMPAIGN_GIT_USER_EMAIL),
+    ):
+        configured = subprocess.run(
+            ["git", "config", "--local", "--get", key],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+        )
+        if configured.returncode == 0 and configured.stdout.strip():
+            continue
+        subprocess.run(
+            ["git", "config", "--local", key, value],
+            cwd=str(workspace),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 def _extract_archive(data: bytes, destination: Path) -> None:
@@ -52,9 +78,17 @@ def _extract_archive(data: bytes, destination: Path) -> None:
 
 
 def _archive_paths_with_package_boundaries(
-    source: Path, revision: str, archive_paths: tuple[str, ...]
+    source: Path,
+    revision: str,
+    archive_paths: tuple[str, ...],
+    *,
+    mode: str = "upstream",
 ) -> tuple[str, ...]:
     """Include immutable parent package markers needed to import editable trees."""
+    if mode == "minimal":
+        return archive_paths
+    if mode != "upstream":
+        raise ValueError(f"unsupported package boundary mode: {mode}")
     paths = list(archive_paths)
     seen = set(paths)
     for raw in archive_paths:
@@ -77,6 +111,36 @@ def _archive_paths_with_package_boundaries(
     return tuple(paths)
 
 
+def _install_minimal_package_boundaries(
+    destination: Path, archive_paths: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Create inert parent package markers around a minimized source subtree."""
+    generated: list[str] = []
+    for raw in archive_paths:
+        path = PurePosixPath(raw)
+        current = path.parent
+        parents: list[PurePosixPath] = []
+        while current.parts:
+            parents.append(current)
+            current = current.parent
+        for package in reversed(parents):
+            if any(not part.isidentifier() for part in package.parts):
+                raise ValueError(
+                    "minimal package boundaries require Python package paths: "
+                    + package.as_posix()
+                )
+            marker = destination / package / "__init__.py"
+            if marker.exists():
+                continue
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                '"""Generated inert package boundary for Repository Horizon."""\n',
+                encoding="utf-8",
+            )
+            generated.append(marker.relative_to(destination).as_posix())
+    return tuple(generated)
+
+
 def seed_workspace(
     campaign,
     manifest: RepositoryManifest,
@@ -90,6 +154,7 @@ def seed_workspace(
             raise RuntimeError(
                 f"existing repository campaign has no Git HEAD: {workspace}"
             )
+        _ensure_campaign_git_identity(workspace)
         lock_path = workspace / "source.lock.json"
         if not lock_path.is_file():
             raise RuntimeError("existing repository campaign has no source.lock.json")
@@ -211,7 +276,10 @@ def seed_workspace(
         )
 
     archive_paths = _archive_paths_with_package_boundaries(
-        source_checkout, exact_revision, manifest.archive_paths
+        source_checkout,
+        exact_revision,
+        manifest.archive_paths,
+        mode=manifest.package_boundaries,
     )
     archive = _git(
         source_checkout,
@@ -224,6 +292,8 @@ def seed_workspace(
     ).stdout
     vendor_root = workspace / manifest.vendor_root
     _extract_archive(archive, vendor_root)
+    if manifest.package_boundaries == "minimal":
+        _install_minimal_package_boundaries(vendor_root, manifest.archive_paths)
     support_records: list[dict[str, object]] = []
     if manifest.runtime_support:
         support_root = workspace / "vendor_support"
@@ -276,6 +346,7 @@ def seed_workspace(
     # that runtime; tests and resumed workspaces may already have hidden this ordering
     # requirement by arriving pre-initialized.
     subprocess.run(["git", "init"], cwd=str(workspace), check=True, capture_output=True)
+    _ensure_campaign_git_identity(workspace)
     install_minimal_runtime(campaign, workspace, manifest)
     install_repository_policy(workspace, manifest)
     bringup_enabled = manifest.bringup.mode == "auto"

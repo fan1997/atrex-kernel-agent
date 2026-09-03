@@ -23,12 +23,13 @@ V3 intentionally differs from `main` in only two workflow choices:
 Everything below is owned by current `main`:
 
 - isolated episode worktrees and exact terminal handoffs;
-- native Claude/Codex session recovery and token telemetry;
+- native Claude/Codex/Qoder same-session recovery and token telemetry;
 - pivot, blocked, rejected, and interrupted canonical-memory semantics;
 - current mode/runtime identity and immutable workspace-policy lifecycle;
 - same-allocation ABBA acceptance and squash promotion;
 - aggregation of all ABBA repeats into canonical per-shape memory;
-- public `agent_problem.json` plus evaluator-private exact production shapes;
+- public `agent_problem.json`, exact cases explicitly disclosed in Notes, and evaluator-private
+  undisclosed production shapes;
 - complete hidden-shape coverage checks.
 
 `RepositoryHorizonCampaign` subclasses `long_horizon.campaign.LongHorizonCampaign` and does not
@@ -43,7 +44,9 @@ Repository-specific behavior remains responsible for:
   editable-source change while leaving `gen-plan` optional;
 - manifest-declared editable roots;
 - minimized and locked support wheels;
-- repository-snapshot development evaluation and final ABBA staging.
+- minimized package boundaries for remote repository staging;
+- repository-snapshot development evaluation and final ABBA staging within Agate's allocation
+  limit, with infra-only resubmission.
 
 For generalized production operators, `shapes.json`, `metadata.json`, and `roofline.json` are never
 copied into the Agent worktree. They are injected only into an out-of-band verifier stage and are

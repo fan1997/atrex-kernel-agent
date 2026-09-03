@@ -16,7 +16,7 @@ CACHE_RELATIVE_PATH = Path(
 
 def _campaign_workspace() -> Path | None:
     completed = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["git", "rev-parse", "--git-common-dir"],
         text=True,
         capture_output=True,
         check=False,

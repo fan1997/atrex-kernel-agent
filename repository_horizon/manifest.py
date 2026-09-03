@@ -65,6 +65,7 @@ class RepositoryManifest:
     editable_roots: tuple[str, ...]
     adapter: Path
     package_root: str
+    package_boundaries: str
     measurement: MeasurementConfig
     runtime_requirements: tuple[RuntimeRequirement, ...]
     runtime_support: tuple[RuntimeSupportWheel, ...]
@@ -124,6 +125,12 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
     source = payload.get("source")
     if not isinstance(source, dict):
         raise ValueError("source must be an object")
+    package_boundaries = _nonempty_string(
+        source.get("package_boundaries", "upstream"),
+        "source.package_boundaries",
+    )
+    if package_boundaries not in {"upstream", "minimal"}:
+        raise ValueError("source.package_boundaries must be upstream or minimal")
     measurement_payload = payload.get("measurement") or {}
     if not isinstance(measurement_payload, dict):
         raise ValueError("measurement must be an object")
@@ -279,6 +286,7 @@ def load_manifest(path: str | Path) -> RepositoryManifest:
             if source.get("package_root", ".") != "."
             else "."
         ),
+        package_boundaries=package_boundaries,
         measurement=measurement,
         runtime_requirements=tuple(requirements),
         runtime_support=tuple(support),

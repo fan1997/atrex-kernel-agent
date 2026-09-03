@@ -49,6 +49,7 @@ import io
 import json
 import math
 import os
+import random
 import re
 import signal
 import shlex
@@ -1550,6 +1551,83 @@ def _run_agate_once(
         _forget_agate_job(job_id)
 
 
+AGATE_INFRA_MAX_RESUBMITS = int(
+    os.environ.get("ATREX_SANDBOX_INFRA_RESUBMITS", "3")
+)
+AGATE_INFRA_TEXT_MARKERS = (
+    "connectionerror",
+    "connecttimeout",
+    "readtimeout",
+    "remotedisconnected",
+    "connection reset",
+    "connection aborted",
+    "max retries exceeded",
+    "temporary failure in name resolution",
+    "502 bad gateway",
+    "503 service",
+    "504 gateway",
+    "oss_input_download_failed",
+    "logs_unavailable",
+)
+
+
+def _agate_infra_job_failure(proc: subprocess.CompletedProcess[str]) -> bool:
+    """Return whether Agate failed before producing an application outcome."""
+    job = _job_response(proc.stdout or "")
+    if job is None:
+        output = f"{proc.stdout or ''}\n{proc.stderr or ''}".casefold()
+        return proc.returncode != 0 and any(
+            marker in output for marker in AGATE_INFRA_TEXT_MARKERS
+        )
+    if job.get("status") == "succeeded":
+        return False
+    error = job.get("error")
+    if isinstance(error, dict):
+        error_class = error.get("error_class")
+        if error_class == "infra":
+            return True
+        if error_class:
+            return False
+        error_text = json.dumps(error, sort_keys=True).casefold()
+        if any(marker in error_text for marker in AGATE_INFRA_TEXT_MARKERS):
+            return True
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    return not isinstance(result.get("exit_code"), int)
+
+
+def _run_agate_with_infra_retry(
+    *,
+    agate: list[str],
+    executable: str,
+    url: str,
+    gateway_profile: str | None,
+    command_timeout: int,
+    wait_budget: int,
+) -> subprocess.CompletedProcess[str]:
+    """Resubmit jobs that ended for gateway, transport, or worker infra reasons."""
+    attempt = 0
+    while True:
+        proc = _run_agate_with_cancel_retry(
+            agate=agate,
+            executable=executable,
+            url=url,
+            gateway_profile=gateway_profile,
+            command_timeout=command_timeout,
+            wait_budget=wait_budget,
+        )
+        if not _agate_infra_job_failure(proc) or attempt >= AGATE_INFRA_MAX_RESUBMITS:
+            return proc
+        delay = min(30.0 * (2**attempt), 240.0) + random.uniform(0.0, 5.0)
+        print(
+            "sandbox: agate infra failure detected; resubmitting in "
+            f"{delay:.0f}s (attempt {attempt + 1}/{AGATE_INFRA_MAX_RESUBMITS})",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(delay)
+        attempt += 1
+
+
 def _run_agate_with_cancel_retry(
     *,
     agate: list[str],
@@ -2220,7 +2298,7 @@ def _run_typed_gateway(
                     queue_wait_grace,
                     reference_dir,
                 )
-                return _run_agate_with_cancel_retry(
+                return _run_agate_with_infra_retry(
                     agate=agate,
                     executable=agate_executable,
                     url=args.url,
@@ -2694,7 +2772,7 @@ def _main(argv: list[str] | None = None) -> int:
                 ) from exc
         else:
             try:
-                proc = _run_agate_with_cancel_retry(
+                proc = _run_agate_with_infra_retry(
                     agate=agate,
                     executable=agate_executable or "agate",
                     url=args.url,

@@ -4,6 +4,8 @@ import hashlib
 import json
 import math
 import shutil
+import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -23,6 +25,33 @@ from .agent_result import write_agent_result
 from .manifest import RepositoryManifest
 from .staging import build_abba_stage
 from .transport import collect_agate_dev, submit_agate_dev, submit_local_dev
+
+
+_INFRA_VERIFY_RETRY_DELAYS = (60.0, 300.0, 900.0)
+_INFRA_ERROR_SIGNATURES = (
+    '"error_class": "infra"',
+    "oss_input_download_failed",
+    "logs_unavailable",
+    "ConnectionError",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "RemoteDisconnected",
+    "Connection reset",
+    "Connection aborted",
+    "Max retries exceeded",
+    "Name or service not known",
+    "Temporary failure in name resolution",
+    "502 Bad Gateway",
+    "503 Service",
+    "504 Gateway",
+)
+
+
+def _infra_verification_retryable(result: VerificationResult) -> bool:
+    if result.gate != "ERROR":
+        return False
+    message = result.error or ""
+    return any(signature in message for signature in _INFRA_ERROR_SIGNATURES)
 
 
 def _evaluation_runtime_root(workspace: Path) -> Path:
@@ -455,25 +484,43 @@ class RepositoryABBAValidator:
         candidate_commit: str,
         changed_paths: list[str],
     ) -> VerificationResult:
-        try:
-            pending = self.submit(
-                workspace,
-                base_commit=base_commit,
-                candidate_commit=candidate_commit,
-                changed_paths=changed_paths,
+        attempt = 0
+        while True:
+            try:
+                pending = self.submit(
+                    workspace,
+                    base_commit=base_commit,
+                    candidate_commit=candidate_commit,
+                    changed_paths=changed_paths,
+                )
+                result = self.collect(pending)
+            except Exception as exc:
+                result = VerificationResult(
+                    "ERROR",
+                    None,
+                    None,
+                    None,
+                    error=(
+                        "repository Agate verification failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
+            if (
+                self.backend != "agate"
+                or not _infra_verification_retryable(result)
+                or attempt >= len(_INFRA_VERIFY_RETRY_DELAYS)
+            ):
+                return result
+            delay = _INFRA_VERIFY_RETRY_DELAYS[attempt]
+            print(
+                "[repository-horizon] Agate infra failure; resubmitting "
+                f"authoritative verification in {delay:.0f}s "
+                f"(attempt {attempt + 1}/{len(_INFRA_VERIFY_RETRY_DELAYS)})",
+                file=sys.stderr,
+                flush=True,
             )
-            return self.collect(pending)
-        except Exception as exc:
-            return VerificationResult(
-                "ERROR",
-                None,
-                None,
-                None,
-                error=(
-                    "repository Agate verification failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ),
-            )
+            time.sleep(delay)
+            attempt += 1
 
 
 class RepositoryPhaseValidator:

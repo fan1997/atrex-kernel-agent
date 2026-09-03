@@ -116,6 +116,7 @@ def main() -> int:
             cache = cache_root / revision
             cache.mkdir(parents=True, exist_ok=True)
             env["CUTE_DSL_CACHE_DIR"] = str(cache / "cute")
+            env["FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED"] = "1"
             env["TRITON_CACHE_DIR"] = str(cache / "triton")
             env["TMPDIR"] = str(cache / "tmp")
             Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)

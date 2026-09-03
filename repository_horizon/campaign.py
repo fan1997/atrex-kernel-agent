@@ -60,13 +60,14 @@ class RepositoryCampaign(Campaign):
 
 - Target gateway hardware: **{self.sandbox_hardware}**{endpoint}. Every GPU import,
   compile, correctness check, timer, or profiler must cross this gateway.
-- This coding session has no private-evaluator capability. Exact shapes, release metadata,
+- This coding session has no private-evaluator capability. Undisclosed exact shapes, release metadata,
   private evaluator directories, `PROFILE_SHAPE_ID`, and
   `.atrex_private_profile_case.json` are forbidden. Do not invoke
   `repository_horizon.dev_eval`; the supervisor owns full hidden-shape verification and
   same-allocation ABBA promotion after handoff.
-- Build development cases only from `agent_problem.json`. Put temporary public-contract
-  drivers and profiler harnesses under ignored `profiles/`, and submit them with
+- Build development cases only from `agent_problem.json` and any exact cases explicitly disclosed
+  in the campaign Notes. Put temporary public-contract drivers and profiler harnesses under ignored
+  `profiles/`, and submit them with
   `python tools/sandbox.py --kind dev --hardware {self.sandbox_hardware}` plus the
   configured endpoint and explicit `--input` allowlist. Development measurements are
   evidence, never acceptance authority.

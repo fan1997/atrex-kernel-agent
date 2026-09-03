@@ -8,7 +8,8 @@
     "archive_paths": [
       "flash_attn/cute"
     ],
-    "package_root": "."
+    "package_root": ".",
+    "package_boundaries": "minimal"
   },
   "editable_roots": [
     "flash_attn/cute"

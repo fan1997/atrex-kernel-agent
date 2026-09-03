@@ -5,6 +5,7 @@ import json
 import math
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +24,7 @@ from .journal import initialize as initialize_journal
 from .journal import load as load_journal
 from .journal import sync_live_memory
 from .journal import validate_terminal
-from .models import EpisodeHandoff, SupervisorState, VerificationResult
+from .models import EpisodeHandoff, SessionResult, SupervisorState, VerificationResult
 from .session import LongSessionRunner
 from .store import CampaignStore, RUNTIME_DIR, VERIFY_DIR
 from .telemetry import summarize_episode
@@ -43,6 +44,33 @@ MEMORY_EXPERIMENT_FIELDS = (
 )
 MAX_MEMORY_EXPERIMENT_FIELD_CHARS = 2_000
 EPISODE_EVALUATIONS_PATH = Path(".atrex_long_horizon/evaluations.jsonl")
+
+_AGENT_INFRA_RETRY_DELAYS = (60.0, 120.0, 300.0, 600.0, 900.0)
+_AGENT_INFRA_PARK_AFTER = 10
+_AGENT_INFRA_SIGNATURES = (
+    "credit usage limit",
+    "403 forbidden",
+    '"code":"112"',
+    "econnrefused",
+    "enotfound",
+    "eai_again",
+    "network error",
+    "socket hang up",
+    "502 bad gateway",
+    "503 service",
+    "504 gateway",
+    "overloaded",
+    "rate limit",
+    "too many requests",
+    "malformed tool call stream",
+)
+
+
+def _agent_infra_session_failure(result: SessionResult) -> bool:
+    if result.exit_status == 0 or result.timed_out or result.handoff is not None:
+        return False
+    output = f"{result.stderr_tail}\n{result.stdout_tail}".casefold()
+    return any(signature in output for signature in _AGENT_INFRA_SIGNATURES)
 
 
 def _render(template: str, values: dict[str, object]) -> str:
@@ -981,6 +1009,7 @@ class LongHorizonCampaign:
         runner = self.session_runner or LongSessionRunner(
             agent_cli=getattr(self.base_campaign, "agent_cli", "claude")
         )
+        agent_infra_streak = 0
         starting_episodes = state.episodes
         reason = "budget: max-iters" if self.max_version is not None else "max-episodes"
 
@@ -1083,6 +1112,28 @@ class LongHorizonCampaign:
                 ),
                 telemetry_environment=telemetry_environment,
             )
+            if _agent_infra_session_failure(result):
+                agent_infra_streak += 1
+                print(
+                    "[long-horizon] agent backend infra failure; formal episode "
+                    f"{episode} was not consumed (streak={agent_infra_streak})",
+                    flush=True,
+                )
+                worktree.remove(self.workspace)
+                store.clear_active()
+                if agent_infra_streak >= _AGENT_INFRA_PARK_AFTER:
+                    store.save_state(state)
+                    reason = (
+                        "infra-parked: "
+                        f"{agent_infra_streak} consecutive agent-backend failures"
+                    )
+                    break
+                delay = _AGENT_INFRA_RETRY_DELAYS[
+                    min(agent_infra_streak - 1, len(_AGENT_INFRA_RETRY_DELAYS) - 1)
+                ]
+                time.sleep(delay)
+                continue
+            agent_infra_streak = 0
             state.episodes = episode
             state.tokens += result.tokens
             handoff = result.handoff

@@ -20,7 +20,7 @@ def infer_live_memory_path(path: Path) -> Path | None:
     worktree = path.resolve().parent.parent
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            ["git", "rev-parse", "--git-common-dir"],
             cwd=str(worktree), capture_output=True, text=True,
         )
     except OSError:

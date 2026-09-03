@@ -31,9 +31,10 @@ plans and profiles are ignored evidence and must not be committed. Never edit th
 evaluator, private/public workload contract, source lock, source manifest, corpus catalog, vendored
 runtime support, canonical memory, README, or agent policy files.
 
-For a generalized production workload, `agent_problem.json` is the complete public contract.
-Do not search outside the workspace for hidden evaluator cases. Exact `shapes.json` and release
-metadata are staged only at the private verification boundary.
+`agent_problem.json` and any exact cases explicitly disclosed in the campaign Notes together form
+the complete public contract. Do not search outside that disclosed contract for hidden evaluator
+cases. Undisclosed `shapes.json` and release metadata are staged only at the private verification
+boundary.
 
 {{MODE_POLICY}}
 
@@ -46,9 +47,10 @@ metadata are staged only at the private verification boundary.
 ## Execution boundary
 
 All GPU imports, compilation, correctness, benchmarking, and profiling must use the local gateway.
-The coding session has only the public contract: construct representative synthetic cases from
-`agent_problem.json` and keep temporary drivers under ignored `profiles/`. The supervisor alone
-owns exact hidden-shape correctness, measurement, and ABBA promotion. Do not invoke
+The coding session has only the public contract: construct development cases from
+`agent_problem.json` and any exact cases explicitly disclosed in the campaign Notes, and keep
+temporary drivers under ignored `profiles/`. The supervisor alone owns undisclosed-case
+correctness, measurement, and ABBA promotion. Do not invoke
 `repository_horizon.dev_eval`, request `PROFILE_SHAPE_ID`, read a private profile case, or search
 outside the workspace for evaluator data.
 

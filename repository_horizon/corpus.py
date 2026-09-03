@@ -75,6 +75,42 @@ def _fetch_commit(source: Path, destination: Path, commit: str, local_name: str)
     )
     if local.returncode == 0:
         return "source_checkout"
+    # Some Git servers reject a raw object-id want when the commit is not an
+    # advertised ref. The exact local commit is already resolved and trusted,
+    # so transfer only its reachable closure without exposing sibling refs.
+    producer = subprocess.Popen(
+        ["git", "pack-objects", "--revs", "--stdout"],
+        cwd=str(source),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert producer.stdin is not None
+    assert producer.stdout is not None
+    assert producer.stderr is not None
+    consumer = subprocess.Popen(
+        ["git", f"--git-dir={destination}", "index-pack", "--stdin", "--fix-thin"],
+        stdin=producer.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    producer.stdout.close()
+    producer.stdin.write((commit + "\n").encode("ascii"))
+    producer.stdin.close()
+    consumer_stdout, consumer_stderr = consumer.communicate()
+    producer_stderr = producer.stderr.read()
+    producer.stderr.close()
+    producer_returncode = producer.wait()
+    if producer_returncode == 0 and consumer.returncode == 0:
+        updated = _bare(
+            destination,
+            "update-ref",
+            f"refs/heads/{local_name}",
+            commit,
+            check=False,
+        )
+        if updated.returncode == 0:
+            return "source_checkout_pack"
     # A partial/promisor checkout cannot serve objects it has not hydrated:
     # upload-pack deliberately disables lazy fetching. Fetching the exact
     # locked commit directly from the same promisor remote preserves the
@@ -99,10 +135,16 @@ def _fetch_commit(source: Path, destination: Path, commit: str, local_name: str)
         remote_error = f"fetch exited {remote.returncode}"
     else:
         remote_error = "source checkout has no promisor remote"
-    local_error = local.stderr.strip()[-2000:]
+    local_error = local.stderr.strip()[-1200:]
+    pack_error = (
+        producer_stderr.decode("utf-8", errors="replace")
+        + consumer_stderr.decode("utf-8", errors="replace")
+        + consumer_stdout.decode("utf-8", errors="replace")
+    ).strip()[-1200:]
     raise RuntimeError(
         "could not materialize bounded source corpus from local checkout "
-        f"({local_error}) or its promisor remote ({remote_error})"
+        f"({local_error}); local pack transfer failed ({pack_error}); "
+        f"promisor remote failed ({remote_error})"
     )
 
 

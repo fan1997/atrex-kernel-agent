@@ -44,8 +44,7 @@ def _baseline_driver_directive(agent_cli: str) -> str:
         )
     if agent_cli == "qodercli":
         return (
-            "Complete the baseline workflow directly in this Qoder session. Do not launch an "
-            "Agent/subagent. Treat the current working directory as the only writable "
+            "Complete the baseline workflow. Treat the current working directory as the only writable "
             "workspace and use relative paths for every campaign file"
         )
     return (
@@ -72,9 +71,9 @@ def _plan_generator_directive(agent_cli: str, version: int) -> str:
         )
     if agent_cli == "qodercli":
         return (
-            f"Read `skills/gen-plan/SKILL.md` and execute it directly with `{draft}` as input and "
-            f"`{plan}` as output in direct/no-discussion mode. Do not launch a planning subagent; "
-            "freeze the skill's Qoder review in this current session before reading the independent "
+            f"Read `skills/gen-plan/SKILL.md` and execute it with `{draft}` as input and "
+            f"`{plan}` as output in direct/no-discussion mode. Freeze the skill's Qoder review "
+            "before reading the independent "
             "Codex review, then synthesize and wait for the plan file before continuing."
         )
     return f"```text\n/gen-plan --input {draft} --output {plan} --direct\n```"

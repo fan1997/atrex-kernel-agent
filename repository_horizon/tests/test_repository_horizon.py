@@ -24,6 +24,7 @@ from repository_horizon.corpus import CORPUS_RELATIVE, validate_source_corpus
 from repository_horizon.dev_eval import _require_reconnaissance
 from repository_horizon.baseline import RepositoryBaselineManager
 from repository_horizon.manifest import RuntimeSupportWheel, load_manifest
+from repository_horizon.persistent_run_eval import _run_single_shape_in_process
 from repository_horizon.policy import install_repository_policy
 from repository_horizon.repository_profile import _profile_target_python
 from repository_horizon.reconnaissance import (
@@ -34,6 +35,7 @@ from repository_horizon.reconnaissance import (
 )
 from repository_horizon.seed import (
     _archive_paths_with_package_boundaries,
+    _install_minimal_package_boundaries,
     seed_workspace,
 )
 from repository_horizon.staging import build_abba_stage
@@ -56,6 +58,8 @@ def make_source(root: Path) -> tuple[Path, str]:
         "VALUE = 1\n", encoding="utf-8"
     )
     subprocess.run(["git", "init"], cwd=source, check=True, capture_output=True)
+    run_git(source, "config", "user.name", "test")
+    run_git(source, "config", "user.email", "test@example.com")
     run_git(source, "add", ".")
     run_git(source, "commit", "-m", "source")
     return source, git_head(source)
@@ -379,6 +383,28 @@ class RepositoryContractTests(unittest.TestCase):
 
 
 class SeedAndStagingTests(unittest.TestCase):
+    def test_baseline_amend_reconciles_interrupted_active_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            pre_head = init_repo(workspace)
+            active_path = workspace / ".atrex_long_horizon" / "active_episode.json"
+            active_path.parent.mkdir()
+            active_path.write_text(
+                json.dumps({"episode": 1, "base_commit": pre_head}) + "\n",
+                encoding="utf-8",
+            )
+            memory = workspace / "memory" / "v0.json"
+            memory.parent.mkdir()
+            memory.write_text(
+                '{"quality_gate":{"result":"PASS"}}\n', encoding="utf-8"
+            )
+
+            RepositoryBaselineManager._amend(workspace, memory)
+
+            active = json.loads(active_path.read_text(encoding="utf-8"))
+            self.assertNotEqual(active["base_commit"], pre_head)
+            self.assertEqual(active["base_commit"], git_head(workspace))
+
     @staticmethod
     def _campaign_fixture(root: Path) -> SimpleNamespace:
         op = root / "op"
@@ -421,6 +447,14 @@ class SeedAndStagingTests(unittest.TestCase):
             self.assertTrue((campaign.workspace / ".git").is_dir())
             self.assertEqual(run_git(campaign.workspace, "status", "--porcelain"), "")
             self.assertTrue((campaign.workspace / "tools").is_symlink())
+            self.assertEqual(
+                run_git(campaign.workspace, "config", "--local", "--get", "user.name"),
+                "atrex-long-horizon",
+            )
+            self.assertEqual(
+                run_git(campaign.workspace, "config", "--local", "--get", "user.email"),
+                "atrex-long-horizon@local",
+            )
 
     def test_replay_strict_corpus_contains_only_r0_ancestry(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -486,6 +520,50 @@ class SeedAndStagingTests(unittest.TestCase):
                 ),
                 ("flash_attn/cute", "flash_attn/__init__.py"),
             )
+
+    def test_minimal_package_boundaries_replace_eager_parent_init(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, revision = make_source(root)
+            (source / "flash_attn" / "__init__.py").write_text(
+                "raise RuntimeError('compiled extension required')\n",
+                encoding="utf-8",
+            )
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "eager package init")
+            revision = git_head(source)
+            manifest_path = make_manifest(root, revision)
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload["source"]["archive_paths"] = ["flash_attn/cute"]
+            payload["source"]["package_boundaries"] = "minimal"
+            manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+            manifest = load_manifest(manifest_path)
+            campaign = self._campaign_fixture(root)
+
+            with mock.patch("repository_horizon.seed.install_minimal_runtime"):
+                seed_workspace(campaign, manifest, source)
+
+            parent = campaign.workspace / manifest.vendor_root / "flash_attn/__init__.py"
+            self.assertIn("Generated inert package boundary", parent.read_text())
+            self.assertNotIn("compiled extension", parent.read_text())
+            probe = subprocess.run(
+                [sys.executable, "-c", "import flash_attn.cute.kernel as k; print(k.VALUE)"],
+                env={
+                    "PYTHONPATH": str(campaign.workspace / manifest.vendor_root),
+                    "PATH": str(Path(sys.executable).parent),
+                },
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(probe.stdout.strip(), "1")
+
+    def test_minimal_package_boundaries_reject_non_package_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "Python package paths"):
+                _install_minimal_package_boundaries(
+                    Path(temp), ("not-a-package/cute",)
+                )
 
     def test_allowlist_corpus_fetches_only_explicit_refs(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -680,6 +758,50 @@ class SeedAndStagingTests(unittest.TestCase):
             self.assertEqual(
                 (stage / snapshot).read_text(encoding="utf-8"), "VALUE = 2\n"
             )
+            scripts = stage / "runtime" / "atrex-bench" / "scripts"
+            self.assertEqual(
+                (scripts / "_run_eval_official.py").read_text(encoding="utf-8"),
+                "# fixture\n",
+            )
+            self.assertIn(
+                "_run_single_shape_in_process",
+                (scripts / "run_eval.py").read_text(encoding="utf-8"),
+            )
+
+    def test_persistent_shape_worker_uses_official_body_and_converters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            results = Path(temp)
+
+            def run_shape(*, shape_result_path: Path, shape_id: str, **_kwargs) -> None:
+                shape_result_path.write_text(
+                    json.dumps(
+                        {
+                            "compile_succeeded": True,
+                            "correctness": {"shape": shape_id},
+                            "performance": {"latency": 12.5},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            official = SimpleNamespace(
+                _run_single_shape_main=run_shape,
+                _load_shape_result_payload=lambda path: json.loads(
+                    path.read_text(encoding="utf-8")
+                ),
+                _correctness_from_payload=lambda value: ("correct", value),
+                _performance_from_payload=lambda value: ("perf", value),
+                _subworker_failure_results=lambda **kwargs: ("failed", kwargs),
+            )
+            correctness, performance, compiled = _run_single_shape_in_process(
+                official,
+                shape_results_dir=results,
+                shape_id="17",
+                validation_mode="full",
+            )
+            self.assertEqual(correctness, ("correct", {"shape": "17"}))
+            self.assertEqual(performance, ("perf", {"latency": 12.5}))
+            self.assertTrue(compiled)
 
     def test_agate_payload_can_be_nested_in_json_output(self) -> None:
         payload = {"schema_version": 1, "runs": [], "error": None}
@@ -709,6 +831,16 @@ class SeedAndStagingTests(unittest.TestCase):
         self.assertIn("--no-wait", command)
         self.assertNotIn("--wait-timeout", command)
         self.assertNotIn("--wait", command)
+
+    def test_agate_development_rejects_timeout_above_service_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "1..600"):
+            submit_agate_dev(
+                Path("/tmp/stage"),
+                hardware="L20D",
+                profile="prod",
+                url="",
+                job_timeout=601,
+            )
 
     def test_local_agate_development_honors_pinned_python(self) -> None:
         completed = subprocess.CompletedProcess(

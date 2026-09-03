@@ -140,6 +140,16 @@ def resume_session_command(
         command.insert(2, "resume")
         command.extend([session_id, prompt])
         return command
+    if agent_cli == "qodercli":
+        command = fresh_session_command(prompt, session_id, reasoning_effort, agent_cli)
+        try:
+            index = command.index("--session-id")
+        except ValueError as exc:
+            raise RuntimeError(
+                "current main Qoder command has no --session-id compatibility seam"
+            ) from exc
+        command[index : index + 2] = ["--resume", session_id]
+        return command
     if agent_cli != "claude":
         raise RuntimeError(
             f"same-session handoff recovery is not supported by current main for {agent_cli}"
@@ -160,7 +170,7 @@ def session_environment(agent_cli: str = "claude") -> dict[str, str]:
 
 
 def supports_same_session_resume(agent_cli: str) -> bool:
-    return agent_cli in {"claude", "codex"}
+    return agent_cli in {"claude", "codex", "qodercli"}
 
 
 def session_id_from_stream(

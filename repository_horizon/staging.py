@@ -59,7 +59,12 @@ def add_atrex_runtime(stage_runtime: Path, atrex_bench_root: Path) -> None:
     _copy_python_tree(atrex_bench_root / "src", root / "src")
     (root / "scripts").mkdir(parents=True, exist_ok=True)
     shutil.copy2(
-        atrex_bench_root / "scripts" / "run_eval.py", root / "scripts" / "run_eval.py"
+        atrex_bench_root / "scripts" / "run_eval.py",
+        root / "scripts" / "_run_eval_official.py",
+    )
+    shutil.copy2(
+        Path(__file__).with_name("persistent_run_eval.py"),
+        root / "scripts" / "run_eval.py",
     )
 
 

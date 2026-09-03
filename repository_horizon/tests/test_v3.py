@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import os
 import runpy
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
-from long_horizon.campaign import LongHorizonCampaign
+from long_horizon import main_adapter
+from long_horizon.campaign import LongHorizonCampaign, _agent_infra_session_failure
 from long_horizon.git_episode import EpisodeWorktree, git_head
 from long_horizon.journal import append_experiment, finalize
 from long_horizon.models import (
@@ -19,8 +22,14 @@ from long_horizon.models import (
     VerificationRun,
 )
 from long_horizon.protocol import atomic_write_json
+from long_horizon.session import LongSessionRunner
+from orchestrator.agent_runtime.adapter import QoderAdapter
 from orchestrator.campaign import Campaign
 from orchestrator.constants import ATREX_PRIVATE_REFERENCE_ENV
+from orchestrator.workspace_runtime import (
+    _baseline_driver_directive,
+    _plan_generator_directive,
+)
 
 from repository_horizon.campaign import (
     RepositoryCampaign,
@@ -35,6 +44,7 @@ from repository_horizon.runtime import link_repository_runtime
 from repository_horizon.staging import build_abba_stage
 from repository_horizon.tests.helpers import init_repo, run_git
 from repository_horizon.verifier import (
+    RepositoryABBAValidator,
     RepositoryPhaseValidator,
     _evaluation_runtime_root,
     _remove_private_stage_inputs,
@@ -46,6 +56,205 @@ MANIFEST = ROOT / "recipes" / "fa4_fp8_paged_sm100.example.json"
 
 
 class RepositoryV3Tests(unittest.TestCase):
+    def test_qoder_session_is_persistent_and_resumable(self) -> None:
+        with patch.dict(
+            os.environ, {"ATREX_QODER_CONTEXT_WINDOW": "1000000"}, clear=False
+        ):
+            fresh = QoderAdapter().build_command("prompt", "session-1", "max", "")
+            resumed = main_adapter.resume_session_command(
+                "finish handoff", "session-1", "max", "qodercli"
+            )
+
+        self.assertIn("--session-id", fresh)
+        self.assertNotIn("--no-session-persistence", fresh)
+        self.assertEqual(fresh[fresh.index("--context-window") + 1], "1000000")
+        self.assertEqual(resumed[resumed.index("--resume") + 1], "session-1")
+        self.assertNotIn("--session-id", resumed)
+        self.assertTrue(main_adapter.supports_same_session_resume("qodercli"))
+
+    def test_qoder_invalid_context_window_is_rejected(self) -> None:
+        with patch.dict(
+            os.environ, {"ATREX_QODER_CONTEXT_WINDOW": "invalid"}, clear=False
+        ):
+            with self.assertRaisesRegex(ValueError, "positive integer"):
+                QoderAdapter().build_command("prompt", "session-1", "max", "")
+
+    def test_qoder_missing_handoff_resumes_same_session(self) -> None:
+        commands: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            handoff_path = workspace / ".atrex_long_horizon" / "handoff.json"
+
+            def executor(command, cwd, timeout, environment):
+                del cwd, timeout, environment
+                commands.append(command)
+                if len(commands) == 2:
+                    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+                    handoff_path.write_text('{"status":"pivot"}\n', encoding="utf-8")
+                return "", "", 0, False
+
+            result = LongSessionRunner(
+                executor=executor, agent_cli="qodercli"
+            ).run(
+                workspace,
+                "episode prompt",
+                handoff_path=handoff_path,
+                handoff_resumes=2,
+                completion_check=lambda handoff: "",
+                session_id="session-1",
+            )
+
+        self.assertEqual(len(commands), 2)
+        self.assertIn("--session-id", commands[0])
+        self.assertEqual(commands[1][commands[1].index("--resume") + 1], "session-1")
+        self.assertEqual(result.resume_count, 1)
+        self.assertEqual(result.handoff.status if result.handoff else None, "pivot")
+
+    def test_qoder_nonzero_exit_also_resumes_before_consuming_episode(self) -> None:
+        commands: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            handoff_path = workspace / ".atrex_long_horizon" / "handoff.json"
+
+            def executor(command, cwd, timeout, environment):
+                del cwd, timeout, environment
+                commands.append(command)
+                if len(commands) == 1:
+                    return "", "network error", 1, False
+                handoff_path.parent.mkdir(parents=True, exist_ok=True)
+                handoff_path.write_text('{"status":"pivot"}\n', encoding="utf-8")
+                return "", "", 0, False
+
+            result = LongSessionRunner(
+                executor=executor, agent_cli="qodercli"
+            ).run(
+                workspace,
+                "episode prompt",
+                handoff_path=handoff_path,
+                handoff_resumes=1,
+                completion_check=lambda handoff: "",
+                session_id="session-1",
+            )
+
+        self.assertEqual(len(commands), 2)
+        self.assertIn("--resume", commands[1])
+        self.assertIsNotNone(result.handoff)
+
+    def test_qoder_directives_do_not_restrict_subagents(self) -> None:
+        text = "\n".join(
+            (
+                _baseline_driver_directive("qodercli"),
+                _plan_generator_directive("qodercli", 1),
+            )
+        ).casefold()
+        self.assertNotIn("subagent", text)
+        self.assertNotIn("sub-agent", text)
+        self.assertNotIn("do not launch", text)
+
+    def test_agent_infra_classifier_requires_failed_session_without_handoff(self) -> None:
+        failed = SessionResult(
+            exit_status=1,
+            timed_out=False,
+            tokens=0,
+            session_id="session-1",
+            resume_count=1,
+            handoff=None,
+            stderr_tail="502 Bad Gateway",
+        )
+        code_failure = SessionResult(
+            exit_status=1,
+            timed_out=False,
+            tokens=0,
+            session_id="session-2",
+            resume_count=1,
+            handoff=None,
+            stderr_tail="SyntaxError in kernel.py",
+        )
+        self.assertTrue(_agent_infra_session_failure(failed))
+        self.assertFalse(_agent_infra_session_failure(code_failure))
+
+    def test_sandbox_resubmits_only_infra_terminal_jobs(self) -> None:
+        sandbox = runpy.run_path(str(ROOT.parent / "tools" / "sandbox.py"))
+        infra = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "job_id": "job-infra",
+                    "status": "failed",
+                    "error": {
+                        "error_class": "infra",
+                        "reason": "oss_input_download_failed",
+                    },
+                }
+            ),
+            stderr="",
+        )
+        success = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"job_id": "job-ok", "status": "succeeded"}),
+            stderr="",
+        )
+        runner = sandbox["_run_agate_with_infra_retry"]
+        lower = mock.Mock(side_effect=[infra, success])
+        with patch.dict(
+            runner.__globals__,
+            {
+                "_run_agate_with_cancel_retry": lower,
+                "AGATE_INFRA_MAX_RESUBMITS": 1,
+            },
+        ), patch.object(runner.__globals__["time"], "sleep"):
+            result = runner(
+                agate=["agate", "dev"],
+                executable="agate",
+                url="",
+                gateway_profile=None,
+                command_timeout=600,
+                wait_budget=900,
+            )
+        self.assertIs(result, success)
+        self.assertEqual(lower.call_count, 2)
+
+    def test_sandbox_does_not_resubmit_code_failure_without_exit_code(self) -> None:
+        sandbox = runpy.run_path(str(ROOT.parent / "tools" / "sandbox.py"))
+        code_failure = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "job_id": "job-code",
+                    "status": "failed",
+                    "error": {
+                        "error_class": "code",
+                        "reason": "code_execution_failed",
+                    },
+                }
+            ),
+            stderr="",
+        )
+        self.assertFalse(sandbox["_agate_infra_job_failure"](code_failure))
+
+    def test_authoritative_abba_retries_oss_infra_failure(self) -> None:
+        validator = object.__new__(RepositoryABBAValidator)
+        validator.backend = "agate"
+        validator.submit = mock.Mock(
+            side_effect=[RuntimeError("oss_input_download_failed"), object()]
+        )
+        passed = VerificationResult("PASS", 1.0, 2.0, 50.0)
+        validator.collect = mock.Mock(return_value=passed)
+        with patch(
+            "repository_horizon.verifier._INFRA_VERIFY_RETRY_DELAYS", (0.0,)
+        ), patch("repository_horizon.verifier.time.sleep"):
+            result = validator.verify(
+                Path("/tmp/workspace"),
+                base_commit="a" * 40,
+                candidate_commit="b" * 40,
+                changed_paths=["vendor/source/kernel.py"],
+            )
+        self.assertIs(result, passed)
+        self.assertEqual(validator.submit.call_count, 2)
+
     def test_measured_v0_keeps_normal_abba_after_interrupted_memory(self) -> None:
         normal = object()
         bringup = object()

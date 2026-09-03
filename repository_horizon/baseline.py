@@ -19,6 +19,21 @@ from .seed import seed_workspace
 from .verifier import RepositoryABBAValidator
 
 
+def _reconcile_active_base_after_amend(workspace: Path, pre_head: str) -> None:
+    """Keep an interrupted-episode marker aligned with an amended incumbent."""
+    active_path = workspace / ".atrex_long_horizon" / "active_episode.json"
+    if not active_path.is_file():
+        return
+    try:
+        active = json.loads(active_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    if not isinstance(active, dict) or active.get("base_commit") != pre_head:
+        return
+    active["base_commit"] = git_head(workspace)
+    atomic_write_json(active_path, active)
+
+
 class RepositoryBaselineManager:
     def __init__(
         self,
@@ -177,6 +192,7 @@ class RepositoryBaselineManager:
 
     @staticmethod
     def _amend(workspace: Path, memory_path: Path) -> None:
+        pre_head = git_head(workspace)
         subprocess.run(
             ["git", "add", str(memory_path.relative_to(workspace))],
             cwd=str(workspace),
@@ -197,3 +213,4 @@ class RepositoryBaselineManager:
             check=True,
             capture_output=True,
         )
+        _reconcile_active_base_after_amend(workspace, pre_head)
