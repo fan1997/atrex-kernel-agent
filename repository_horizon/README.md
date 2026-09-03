@@ -40,6 +40,9 @@ Repository-specific behavior remains responsible for:
 
 - immutable source manifests and source locks;
 - bounded source-history corpora;
+- a dual source tree: `source_reference/<source>/` is a complete read-only view rebuilt from the
+  sealed corpus's R0 ref for source archaeology, while `vendor/<source>/` remains the minimal
+  editable and executable package tree;
 - an optional clean reconnaissance seal that gates the first bring-up evaluation before any
   editable-source change while leaving `gen-plan` optional;
 - manifest-declared editable roots;
@@ -47,6 +50,11 @@ Repository-specific behavior remains responsible for:
 - minimized package boundaries for remote repository staging;
 - repository-snapshot development evaluation and final ABBA staging within Agate's allocation
   limit, with infra-only resubmission.
+
+The derived `source_reference/` tree is ignored by Git and lies outside the candidate's editable
+roots, so any forced attempt to commit it is rejected. Public development submissions keep their
+explicit minimal-source allowlist, and authoritative ABBA staging is built from committed campaign
+source, so the complete reference tree is never uploaded to Agate.
 
 For generalized production operators, `shapes.json`, `metadata.json`, and `roofline.json` are never
 copied into the Agent worktree. They are injected only into an out-of-band verifier stage and are

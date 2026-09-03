@@ -46,6 +46,9 @@ class CampaignStore:
             "/plans/",
             "/profiles/",
             "/.humanize/",
+            # Repository Horizon materializes a full, read-only R0 view here.
+            # It is research-only runtime data, never candidate source.
+            "/source_reference/",
         )
         missing = [rule for rule in rules if rule not in text.splitlines()]
         if missing:

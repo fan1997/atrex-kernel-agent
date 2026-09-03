@@ -11,7 +11,7 @@ from orchestrator.optimization_policy import install_workspace_policy
 from orchestrator.workspace_runtime import _install_atrex_bench_runtime
 
 from .capabilities import install_capabilities
-from .corpus import CORPUS_RELATIVE
+from .corpus import CORPUS_RELATIVE, materialize_source_reference
 from .manifest import RepositoryManifest
 from .policy import install_repository_policy
 
@@ -110,6 +110,12 @@ def link_repository_runtime(
     corpus = Path(campaign.workspace) / CORPUS_RELATIVE
     if corpus.is_dir():
         _link_directory(corpus, workspace / CORPUS_RELATIVE)
+        materialize_source_reference(
+            corpus,
+            workspace,
+            manifest.source_name,
+            manifest.revision,
+        )
 
     runtime = workspace / ".repository_horizon_runtime"
     runtime.mkdir(parents=True, exist_ok=True)

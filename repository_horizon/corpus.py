@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
+import shutil
+import stat
 import subprocess
-from pathlib import Path
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
 
 from .manifest import RepositorySearchConfig
 
 CORPUS_RELATIVE = ".repository_horizon_runtime/source_corpus.git"
 CATALOG_NAME = "source_corpus.json"
+SOURCE_REFERENCE_RELATIVE = "source_reference"
 
 
 def _git(
@@ -163,6 +170,149 @@ def _object_inventory(destination: Path) -> list[str]:
         "--batch-check=%(objectname) %(objecttype)",
     )
     return sorted(line for line in result.stdout.splitlines() if line)
+
+
+def _archive_path(value: str) -> PurePosixPath:
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or any(
+        part in {"", ".", ".."} for part in path.parts
+    ):
+        raise ValueError(f"unsafe source archive member: {value}")
+    return path
+
+
+def _symlink_stays_inside(member: PurePosixPath, target: str) -> bool:
+    link = PurePosixPath(target)
+    if not target or link.is_absolute():
+        return False
+    parts: list[str] = []
+    for part in (*member.parent.parts, *link.parts):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                return False
+            parts.pop()
+        else:
+            parts.append(part)
+    return bool(parts)
+
+
+def _extract_source_archive(data: bytes, destination: Path) -> None:
+    """Extract a Git archive without permitting links outside the snapshot."""
+
+    links: list[tuple[Path, PurePosixPath, str]] = []
+    seen: set[PurePosixPath] = set()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        for member in archive.getmembers():
+            path = _archive_path(member.name)
+            if path in seen:
+                raise ValueError(f"duplicate source archive member: {member.name}")
+            seen.add(path)
+            target = destination.joinpath(*path.parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError(f"source archive file has no data: {member.name}")
+                with stream, target.open("wb") as output:
+                    shutil.copyfileobj(stream, output)
+                target.chmod(0o555 if member.mode & 0o111 else 0o444)
+            elif member.issym():
+                if not _symlink_stays_inside(path, member.linkname):
+                    raise ValueError(
+                        f"unsafe source archive symlink: {member.name} -> {member.linkname}"
+                    )
+                links.append((target, path, member.linkname))
+            else:
+                raise ValueError(f"unsupported source archive member: {member.name}")
+    for target, path, linkname in links:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() or target.is_symlink():
+            raise ValueError(f"duplicate source archive member: {path.as_posix()}")
+        target.symlink_to(linkname)
+    for path in sorted(
+        (item for item in destination.rglob("*") if item.is_dir()),
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        # Keep directories traversable/removable so normal Git worktree cleanup
+        # still works.  The files themselves carry the read-only hint.
+        path.chmod(0o755)
+    destination.chmod(0o755)
+
+
+def _remove_materialized_tree(path: Path) -> None:
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        path.unlink()
+        return
+    if not path.exists():
+        return
+    for root, directories, _files in os.walk(path):
+        os.chmod(root, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        for name in directories:
+            child = Path(root) / name
+            if not child.is_symlink():
+                os.chmod(child, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    shutil.rmtree(path)
+
+
+def materialize_source_reference(
+    corpus: Path,
+    workspace: Path,
+    source_name: str,
+    expected_revision: str,
+) -> Path:
+    """Rebuild a read-only full-source view from the sealed corpus R0 ref."""
+
+    source_part = PurePosixPath(source_name)
+    if (
+        source_part.is_absolute()
+        or len(source_part.parts) != 1
+        or source_part.name in {"", ".", ".."}
+    ):
+        raise ValueError(f"source name is not a safe directory name: {source_name}")
+    if not corpus.is_dir():
+        raise FileNotFoundError(corpus)
+    actual = _bare(corpus, "rev-parse", "refs/heads/r0", check=False)
+    if actual.returncode != 0 or actual.stdout.strip() != expected_revision:
+        raise RuntimeError(
+            "bounded source corpus R0 does not match the locked source revision"
+        )
+    process = subprocess.run(
+        [
+            "git",
+            f"--git-dir={corpus}",
+            "archive",
+            "--format=tar",
+            "refs/heads/r0",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    reference_root = workspace / SOURCE_REFERENCE_RELATIVE
+    if reference_root.is_symlink() or (
+        reference_root.exists() and not reference_root.is_dir()
+    ):
+        raise RuntimeError(
+            f"source reference root is not a local directory: {reference_root}"
+        )
+    reference_root.mkdir(parents=True, exist_ok=True)
+    target = reference_root / source_name
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{source_name}.", dir=str(reference_root))
+    )
+    try:
+        _extract_source_archive(process.stdout, temporary)
+        _remove_materialized_tree(target)
+        temporary.rename(target)
+    except BaseException:
+        _remove_materialized_tree(temporary)
+        raise
+    return target
 
 
 def build_source_corpus(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,16 +18,28 @@ from long_horizon.git_episode import (
     promote_candidate,
 )
 from long_horizon.models import VerificationResult, VerificationRun
+from long_horizon.store import CampaignStore
 from repository_horizon.tests.helpers import init_repo, run_git
 from long_horizon.verifier import verification_schedule
 from repository_horizon.candidate import RepositoryCandidateContract
-from repository_horizon.corpus import CORPUS_RELATIVE, validate_source_corpus
+from repository_horizon.corpus import (
+    CORPUS_RELATIVE,
+    SOURCE_REFERENCE_RELATIVE,
+    build_source_corpus,
+    materialize_source_reference,
+    validate_source_corpus,
+)
 from repository_horizon.dev_eval import _require_reconnaissance
 from repository_horizon.baseline import RepositoryBaselineManager
-from repository_horizon.manifest import RuntimeSupportWheel, load_manifest
+from repository_horizon.manifest import (
+    RepositorySearchConfig,
+    RuntimeSupportWheel,
+    load_manifest,
+)
 from repository_horizon.persistent_run_eval import _run_single_shape_in_process
 from repository_horizon.policy import install_repository_policy
 from repository_horizon.repository_profile import _profile_target_python
+from repository_horizon.runtime import link_repository_runtime
 from repository_horizon.reconnaissance import (
     REPORT_RELATIVE,
     SEAL_RELATIVE,
@@ -511,6 +524,96 @@ class SeedAndStagingTests(unittest.TestCase):
             )
             self.assertTrue(any("excluded commit" in value for value in violations))
 
+    def test_full_source_reference_is_rebuilt_from_sealed_r0_and_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, _first = make_source(root)
+            reference_file = source / "csrc" / "attention.cpp"
+            reference_file.parent.mkdir()
+            reference_file.write_text("// sealed r0\n", encoding="utf-8")
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "r0 with full source")
+            r0 = git_head(source)
+
+            workspace = root / "workspace"
+            init_repo(workspace)
+            corpus = root / "source_corpus.git"
+            build_source_corpus(
+                source,
+                r0,
+                RepositorySearchConfig(mode="replay_strict"),
+                corpus,
+            )
+            reference_file.write_text("// external checkout head\n", encoding="utf-8")
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "later external checkout")
+
+            CampaignStore.ensure_excluded(workspace)
+            snapshot = materialize_source_reference(
+                corpus, workspace, "flash_attention", r0
+            )
+            materialized = snapshot / "csrc" / "attention.cpp"
+            self.assertEqual(materialized.read_text(encoding="utf-8"), "// sealed r0\n")
+            self.assertFalse(materialized.stat().st_mode & stat.S_IWUSR)
+            self.assertEqual(run_git(workspace, "status", "--porcelain"), "")
+
+            materialized.chmod(0o644)
+            materialized.write_text("// polluted episode view\n", encoding="utf-8")
+            materialize_source_reference(corpus, workspace, "flash_attention", r0)
+            self.assertEqual(materialized.read_text(encoding="utf-8"), "// sealed r0\n")
+
+    def test_runtime_link_materializes_full_reference_in_episode_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, _first = make_source(root)
+            outside_minimal_tree = source / "csrc" / "attention.cpp"
+            outside_minimal_tree.parent.mkdir()
+            outside_minimal_tree.write_text("// full reference\n", encoding="utf-8")
+            run_git(source, "add", ".")
+            run_git(source, "commit", "-m", "full source")
+            r0 = git_head(source)
+            manifest_path = make_manifest(
+                root,
+                r0,
+                repository_search={"mode": "replay_strict"},
+            )
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload["source"]["archive_paths"] = ["flash_attn/cute"]
+            payload["source"]["package_boundaries"] = "minimal"
+            manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+            manifest = load_manifest(manifest_path)
+            campaign = self._campaign_fixture(root)
+            seed_workspace(campaign, manifest, source)
+            self.assertFalse(
+                (campaign.workspace / manifest.vendor_root / "csrc").exists()
+            )
+            canonical_reference = (
+                campaign.workspace
+                / SOURCE_REFERENCE_RELATIVE
+                / manifest.source_name
+                / "csrc"
+                / "attention.cpp"
+            )
+            self.assertEqual(canonical_reference.read_text(), "// full reference\n")
+            self.assertEqual(run_git(campaign.workspace, "status", "--porcelain"), "")
+
+            episode = EpisodeWorktree.create(
+                campaign.workspace, 1, git_head(campaign.workspace)
+            )
+            try:
+                link_repository_runtime(campaign, episode.path, manifest)
+                episode_reference = (
+                    episode.path
+                    / SOURCE_REFERENCE_RELATIVE
+                    / manifest.source_name
+                    / "csrc"
+                    / "attention.cpp"
+                )
+                self.assertEqual(episode_reference.read_text(), "// full reference\n")
+                self.assertEqual(run_git(episode.path, "status", "--porcelain"), "")
+            finally:
+                episode.remove(campaign.workspace)
+
     def test_archive_includes_parent_python_package_markers(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             source, revision = make_source(Path(temp))
@@ -736,6 +839,15 @@ class SeedAndStagingTests(unittest.TestCase):
             run_git(campaign.workspace, "commit", "-m", "candidate")
             candidate = git_head(campaign.workspace)
             relative = vendor_file.relative_to(campaign.workspace).as_posix()
+            derived_reference = (
+                campaign.workspace
+                / SOURCE_REFERENCE_RELATIVE
+                / manifest.source_name
+                / "csrc"
+                / "attention.cpp"
+            )
+            derived_reference.parent.mkdir(parents=True)
+            derived_reference.write_text("// must stay local\n", encoding="utf-8")
             stage = root / "stage"
             metadata = build_abba_stage(
                 campaign.workspace,
@@ -767,6 +879,7 @@ class SeedAndStagingTests(unittest.TestCase):
                 "_run_single_shape_in_process",
                 (scripts / "run_eval.py").read_text(encoding="utf-8"),
             )
+            self.assertFalse((stage / "runtime" / SOURCE_REFERENCE_RELATIVE).exists())
 
     def test_persistent_shape_worker_uses_official_body_and_converters(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
