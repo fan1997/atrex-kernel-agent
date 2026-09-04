@@ -11,6 +11,7 @@ from long_horizon.models import VerificationResult, VerificationRun
 from long_horizon.protocol import atomic_write_json
 from long_horizon.verifier import score_verification_payload, verification_schedule
 
+from .agent_result import write_agent_result
 from .evaluation import (
     PendingVerification,
     load_completed_verification,
@@ -19,8 +20,8 @@ from .evaluation import (
     utc_now,
     wait_for_terminal_job,
 )
-from .agent_result import write_agent_result
 from .manifest import RepositoryManifest
+from .shape_contract import exact_shapes_path
 from .staging import build_abba_stage
 from .transport import collect_agate_dev, submit_agate_dev, submit_local_dev
 
@@ -61,7 +62,7 @@ def has_measured_v0(workspace: Path) -> bool:
 
 def _remove_private_stage_inputs(pending: PendingVerification) -> None:
     runtime = Path(pending.stage) / "runtime"
-    for name in ("shapes.json", "metadata.json", "roofline.json"):
+    for name in ("shapes.json", "shape_valid.json", "metadata.json", "roofline.json"):
         (runtime / name).unlink(missing_ok=True)
 
 
@@ -369,12 +370,14 @@ class RepositoryABBAValidator:
             working_snapshot=working_snapshot,
             private_reference_dir=self.private_reference_dir,
         )
-        shapes_path = (self.private_reference_dir or workspace) / "shapes.json"
+        shapes_path = exact_shapes_path(self.private_reference_dir or workspace)
         expected_shape_ids: tuple[str, ...] = ()
         if shapes_path.is_file():
             shapes = json.loads(shapes_path.read_text(encoding="utf-8"))
             if not isinstance(shapes, dict) or not shapes:
-                raise ValueError("evaluator shapes.json must be a non-empty object")
+                raise ValueError(
+                    f"evaluator {shapes_path.name} must be a non-empty object"
+                )
             expected_shape_ids = tuple(sorted(str(value) for value in shapes))
         if metadata["packed_bytes"] > self.max_packed_bytes:
             raise ValueError(

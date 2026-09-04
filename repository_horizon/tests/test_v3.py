@@ -21,7 +21,6 @@ from long_horizon.models import (
 from long_horizon.protocol import atomic_write_json
 from orchestrator.campaign import Campaign
 from orchestrator.constants import ATREX_PRIVATE_REFERENCE_ENV
-
 from repository_horizon.campaign import (
     RepositoryCampaign,
     RepositoryHorizonCampaign,
@@ -32,6 +31,8 @@ from repository_horizon.dev_eval import _verifier as make_dev_verifier
 from repository_horizon.manifest import load_manifest
 from repository_horizon.prompt import MAX_PROMPT_BYTES, render_prompt
 from repository_horizon.runtime import link_repository_runtime
+from repository_horizon.seed import seed_workspace
+from repository_horizon.shape_contract import validate_shape_train
 from repository_horizon.staging import build_abba_stage
 from repository_horizon.tests.helpers import init_repo, run_git
 from repository_horizon.verifier import (
@@ -41,11 +42,52 @@ from repository_horizon.verifier import (
     _require_complete_shape_coverage,
     has_measured_v0,
 )
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "recipes" / "fa4_fp8_paged_sm100.example.json"
 
 
 class RepositoryV3Tests(unittest.TestCase):
+    @staticmethod
+    def _write_split_operator(root: Path) -> Path:
+        operator = root / "atrex" / "data" / "operator"
+        operator.mkdir(parents=True)
+        (operator / "reference.py").write_text("# reference\n", encoding="utf-8")
+        (operator / "input.py").write_text("# inputs\n", encoding="utf-8")
+        (operator / "shape_train.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "atrex.shape_train.v1",
+                    "objective": "Optimize the complete public domain.",
+                    "operator_contract": {"operation": "fixture"},
+                    "shape_domain": {"n": {"min": 1, "max": 8}},
+                    "invariants": ["n >= 1"],
+                    "coverage_regimes": [{"name": "small"}],
+                    "development_cases": [
+                        {"name": "dev", "init_kwargs": None, "input_kwargs": {"n": 2}}
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (operator / "shape_valid.json").write_text(
+            json.dumps({"hidden": {"init_kwargs": None, "input_kwargs": {"n": 7}}})
+            + "\n",
+            encoding="utf-8",
+        )
+        (operator / "metadata.json").write_text("{}\n", encoding="utf-8")
+        atrex = root / "atrex"
+        (atrex / "src" / "atrex_bench").mkdir(parents=True)
+        (atrex / "src" / "atrex_bench" / "__init__.py").write_text(
+            "", encoding="utf-8"
+        )
+        (atrex / "scripts").mkdir()
+        (atrex / "scripts" / "run_eval.py").write_text(
+            "# fixture\n", encoding="utf-8"
+        )
+        return operator
+
     def test_measured_v0_keeps_normal_abba_after_interrupted_memory(self) -> None:
         normal = object()
         bringup = object()
@@ -208,6 +250,84 @@ class RepositoryV3Tests(unittest.TestCase):
             environment = campaign.agent_environment()
         self.assertEqual(environment, {"KEEP": "yes"})
 
+    def test_split_shape_contract_seeds_public_train_and_stages_private_valid(
+        self,
+    ) -> None:
+        from repository_horizon.tests.test_repository_horizon import (
+            make_manifest,
+            make_source,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, revision = make_source(root)
+            manifest = load_manifest(make_manifest(root, revision))
+            operator = self._write_split_operator(root)
+            validate_shape_train(
+                operator / "shape_train.json",
+                private_shapes_path=operator / "shape_valid.json",
+            )
+            campaign = RepositoryCampaign(
+                name="split",
+                kernel_demo=str(operator / "reference.py"),
+                platform="B300",
+                framework="CuteDSL",
+                work_dir=str(root),
+                atrex_bench_root=str(root / "atrex"),
+                optimization_mode="production",
+                framework_baseline="never",
+                repository_manifest=manifest,
+            )
+            with patch("repository_horizon.seed.install_minimal_runtime"):
+                seed_workspace(campaign, manifest, source)
+
+            workspace = campaign.workspace
+            self.assertEqual(campaign.private_reference_dir, operator)
+            self.assertTrue((workspace / "shape_train.json").is_file())
+            self.assertFalse((workspace / "shape_valid.json").exists())
+            self.assertFalse((workspace / "shapes.json").exists())
+            self.assertFalse((workspace / "metadata.json").exists())
+            campaign._assert_generalized_inputs_are_private()
+            prompt = render_prompt(
+                campaign=campaign,
+                manifest=manifest,
+                episode=1,
+                version=1,
+                worktree=SimpleNamespace(
+                    path=workspace,
+                    base_commit=git_head(workspace),
+                    branch="atrex/test",
+                ),
+                journal_path=workspace / ".atrex_long_horizon" / "journal.json",
+                handoff_path=workspace / ".atrex_long_horizon" / "handoff.json",
+                live_memory_path=workspace / "memory" / "live.json",
+                evaluation_policy=EvaluationPolicy(wait_mode="inline"),
+            )
+            self.assertIn("`shape_train.json` is the complete public contract", prompt)
+            self.assertIn("Exact `shape_valid.json`", prompt)
+            self.assertIn("--input vendor/flash_attention", prompt)
+
+            stage = root / "stage"
+            build_abba_stage(
+                workspace,
+                base_commit=git_head(workspace),
+                candidate_commit=git_head(workspace),
+                changed_paths=[],
+                manifest=manifest,
+                atrex_bench_root=root / "atrex",
+                destination=stage,
+                schedule=[{"revision": "candidate", "repeat": 0}],
+                per_run_timeout=1,
+                private_reference_dir=operator,
+            )
+            self.assertTrue((stage / "runtime" / "shape_train.json").is_file())
+            self.assertTrue((stage / "runtime" / "shape_valid.json").is_file())
+            self.assertFalse((stage / "runtime" / "shapes.json").exists())
+
+            (workspace / "shape_valid.json").write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "evaluator-only"):
+                campaign._assert_generalized_inputs_are_private()
+
     def test_repository_resume_uses_repository_candidate_policy(self) -> None:
         manifest = load_manifest(MANIFEST)
         with tempfile.TemporaryDirectory() as temp:
@@ -261,6 +381,7 @@ class RepositoryV3Tests(unittest.TestCase):
             workdir = root / "workdir"
             (workdir / "runtime").mkdir(parents=True)
             (workdir / "runtime" / "shapes.json").write_text("private")
+            (workdir / "runtime" / "shape_valid.json").write_text("private")
             (workdir / "runtime" / "metadata.json").write_text("private")
             (workdir / ".runs" / "00_candidate_0").mkdir(parents=True)
             (workdir / ".runs" / "00_candidate_0" / "shapes.json").write_text(
@@ -272,6 +393,7 @@ class RepositoryV3Tests(unittest.TestCase):
             (workdir / "__atrex_workspace.tar.gz.b64.part000").write_text("bundle")
             gateway["_scrub_job_payload"](workdir)
             self.assertFalse((workdir / "runtime" / "shapes.json").exists())
+            self.assertFalse((workdir / "runtime" / "shape_valid.json").exists())
             self.assertFalse((workdir / "runtime" / "metadata.json").exists())
             self.assertFalse(
                 (workdir / ".runs" / "00_candidate_0" / "shapes.json").exists()
@@ -281,6 +403,18 @@ class RepositoryV3Tests(unittest.TestCase):
                 (workdir / "__atrex_workspace.tar.gz.b64.part000").exists()
             )
             self.assertTrue((workdir / "keep.txt").is_file())
+
+    def test_evaluator_adapter_prefers_shape_valid(self) -> None:
+        adapter = runpy.run_path(str(ROOT.parent / "reference" / "atrex_bench_test_kernel.py"))
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            (workspace / "shapes.json").write_text(
+                json.dumps({"legacy": {}}), encoding="utf-8"
+            )
+            (workspace / "shape_valid.json").write_text(
+                json.dumps({"modern": {}}), encoding="utf-8"
+            )
+            self.assertEqual(adapter["_expected_shape_ids"](workspace), ["modern"])
 
     def test_runtime_matches_main_assets_except_wiki(self) -> None:
         manifest = load_manifest(MANIFEST)

@@ -9,6 +9,8 @@ import sys
 import traceback
 from pathlib import Path
 
+from .shape_contract import exact_shapes_path
+
 
 def main() -> int:
     stage = Path.cwd()
@@ -23,7 +25,7 @@ def main() -> int:
         from input import _make_inputs
         from kernel import Model
 
-        shapes = json.loads((root / "shapes.json").read_text(encoding="utf-8"))
+        shapes = json.loads(exact_shapes_path(root).read_text(encoding="utf-8"))
         shape_id = sorted(
             shapes, key=lambda value: int(value) if value.isdigit() else value
         )[0]

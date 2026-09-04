@@ -19,6 +19,8 @@ PROTECTED = frozenset(
         "reference.py",
         "input.py",
         "shapes.json",
+        "shape_train.json",
+        "shape_valid.json",
         "metadata.json",
         "roofline.json",
         "valid.py",

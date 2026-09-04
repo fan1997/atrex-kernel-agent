@@ -18,6 +18,7 @@ from long_horizon.git_episode import (
 from long_horizon.models import VerificationResult
 from orchestrator.campaign import Campaign
 from orchestrator.constants import ATREX_PRIVATE_REFERENCE_ENV
+from orchestrator.workspace_state import git_path_blob
 
 from .baseline import RepositoryBaselineManager
 from .candidate import RepositoryCandidateContract
@@ -25,6 +26,14 @@ from .config import EvaluationPolicy
 from .manifest import RepositoryManifest
 from .prompt import render_prompt
 from .runtime import link_repository_runtime
+from .shape_contract import (
+    SHAPE_TRAIN_FILENAME,
+    SHAPE_VALID_FILENAME,
+    exact_shapes_path,
+    has_split_shape_contract,
+    load_exact_shapes,
+    validate_shape_train,
+)
 
 
 @dataclass
@@ -34,6 +43,114 @@ class RepositoryCampaign(Campaign):
     repository_manifest: RepositoryManifest | None = field(
         default=None, repr=False, compare=False
     )
+
+    @property
+    def private_reference_dir(self) -> Path | None:
+        """Support Atrex-Bench's public-train/private-valid split."""
+        op_dir = Path(self.kernel_demo).resolve().parent
+        try:
+            split = has_split_shape_contract(op_dir)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        if not split:
+            return super().private_reference_dir
+        if self.optimization_mode != "production" or not self.atrex_bench_root:
+            return None
+        private_shapes = exact_shapes_path(op_dir)
+        load_exact_shapes(op_dir)
+        validate_shape_train(
+            op_dir / SHAPE_TRAIN_FILENAME,
+            private_shapes_path=private_shapes,
+        )
+        return op_dir
+
+    def _ensure_agent_problem(self) -> None:
+        """Install the supplied public shape contract without regenerating it."""
+        op_dir = Path(self.kernel_demo).resolve().parent
+        if not has_split_shape_contract(op_dir):
+            super()._ensure_agent_problem()
+            return
+        source = op_dir / SHAPE_TRAIN_FILENAME
+        validate_shape_train(source, private_shapes_path=exact_shapes_path(op_dir))
+        destination = self.workspace / SHAPE_TRAIN_FILENAME
+        if destination.is_file() and destination.read_bytes() != source.read_bytes():
+            raise RuntimeError(
+                f"workspace {SHAPE_TRAIN_FILENAME} differs from the supplied public contract"
+            )
+        if not destination.is_file():
+            shutil.copy2(source, destination)
+
+    def _generalized_memory_coverage_problem(self, memory: dict | None) -> str:
+        op_dir = Path(self.kernel_demo).resolve().parent
+        if not has_split_shape_contract(op_dir):
+            return super()._generalized_memory_coverage_problem(memory)
+        if self.private_reference_dir is None or memory is None:
+            return ""
+        shapes = load_exact_shapes(op_dir)
+        performance = memory.get("performance")
+        performance = performance if isinstance(performance, dict) else {}
+        measured = performance.get("latency_us_by_shape")
+        measured = measured if isinstance(measured, dict) else {}
+        expected_ids = {str(value) for value in shapes}
+        measured_ids = {str(value) for value in measured}
+        if measured_ids != expected_ids:
+            return (
+                "canonical memory lacks complete real-shape performance coverage "
+                f"({len(measured_ids)}/{len(expected_ids)})"
+            )
+        return ""
+
+    def _generalized_contract_commit_problem(self) -> str:
+        op_dir = Path(self.kernel_demo).resolve().parent
+        if not has_split_shape_contract(op_dir):
+            return super()._generalized_contract_commit_problem()
+        head = git_head(self.workspace)
+        if head and not git_path_blob(self.workspace, head, SHAPE_TRAIN_FILENAME):
+            return f"{SHAPE_TRAIN_FILENAME} is not tracked by the baseline commit"
+        return ""
+
+    def _assert_generalized_inputs_are_private(self) -> None:
+        op_dir = Path(self.kernel_demo).resolve().parent
+        if not has_split_shape_contract(op_dir):
+            super()._assert_generalized_inputs_are_private()
+            return
+        public_contract = self.workspace / SHAPE_TRAIN_FILENAME
+        source_contract = op_dir / SHAPE_TRAIN_FILENAME
+        if not public_contract.is_file():
+            raise RuntimeError(
+                f"split-contract workspace is missing {SHAPE_TRAIN_FILENAME}; "
+                "start a fresh workspace"
+            )
+        try:
+            validate_shape_train(
+                public_contract,
+                private_shapes_path=exact_shapes_path(op_dir),
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"split-contract workspace has an invalid {SHAPE_TRAIN_FILENAME}: {exc}"
+            ) from exc
+        if public_contract.read_bytes() != source_contract.read_bytes():
+            raise RuntimeError(
+                f"workspace {SHAPE_TRAIN_FILENAME} differs from the supplied public contract"
+            )
+        leaked = [
+            name
+            for name in (
+                SHAPE_VALID_FILENAME,
+                "shapes.json",
+                "metadata.json",
+                "roofline.json",
+                "valid.py",
+            )
+            if (self.workspace / name).exists()
+        ]
+        if leaked:
+            raise RuntimeError(
+                "split-contract workspace exposes evaluator-only files: "
+                + ", ".join(leaked)
+                + "; start a fresh workspace"
+            )
 
     def agent_environment(self) -> dict[str, str]:
         """Keep evaluator-owned paths out of repository coding sessions.
@@ -47,6 +164,12 @@ class RepositoryCampaign(Campaign):
         return environment
 
     def _sandbox_directive(self) -> str:
+        op_dir = Path(self.kernel_demo).resolve().parent
+        public_contract = (
+            SHAPE_TRAIN_FILENAME
+            if has_split_shape_contract(op_dir)
+            else "agent_problem.json"
+        )
         endpoint = (
             f" using gateway URL `{self.sandbox_url}`"
             if self.sandbox_url
@@ -65,7 +188,7 @@ class RepositoryCampaign(Campaign):
   `.atrex_private_profile_case.json` are forbidden. Do not invoke
   `repository_horizon.dev_eval`; the supervisor owns full hidden-shape verification and
   same-allocation ABBA promotion after handoff.
-- Build development cases only from `agent_problem.json`. Put temporary public-contract
+- Build development cases only from `{public_contract}`. Put temporary public-contract
   drivers and profiler harnesses under ignored `profiles/`, and submit them with
   `python tools/sandbox.py --kind dev --hardware {self.sandbox_hardware}` plus the
   configured endpoint and explicit `--input` allowlist. Development measurements are

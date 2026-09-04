@@ -55,7 +55,7 @@ def render_prompt(
     if campaign.sandbox_url:
         public_dev += f" --url {shlex.quote(campaign.sandbox_url)}"
     public_dev += (
-        " --no-sync --input vendor/flash_attention --input kernel.py "
+        f" --no-sync --input {shlex.quote(manifest.vendor_root)} --input kernel.py "
         "--input input.py --input reference.py -- "
         "python profiles/<episode>/public_driver.py"
     )
@@ -66,6 +66,9 @@ def render_prompt(
     editable_roots = " ".join(
         shlex.quote(value) for value in manifest.editable_workspace_roots
     )
+    split_contract = (worktree.path / "shape_train.json").is_file()
+    public_contract = "shape_train.json" if split_contract else "agent_problem.json"
+    private_shapes = "shape_valid.json" if split_contract else "shapes.json"
     require_report = ""
     if manifest.repository_search.require_report:
         if reconnaissance_required(worktree.path, manifest):
@@ -117,6 +120,8 @@ def render_prompt(
                 f"`{value}`" for value in manifest.editable_workspace_roots
             ),
             "EDITABLE_ROOTS_SHELL": editable_roots,
+            "PUBLIC_CONTRACT": public_contract,
+            "PRIVATE_SHAPES": private_shapes,
             "SOURCE_CORPUS": (
                 CORPUS_RELATIVE
                 if read_catalog(worktree.path) is not None

@@ -127,7 +127,12 @@ def _scrub_job_payload(workdir: Path) -> None:
             path.unlink(missing_ok=True)
     for path in workdir.rglob(".atrex_private_profile_case.json"):
         path.unlink(missing_ok=True)
-    private_names = {"shapes.json", "metadata.json", "roofline.json"}
+    private_names = {
+        "shapes.json",
+        "shape_valid.json",
+        "metadata.json",
+        "roofline.json",
+    }
     for path in workdir.rglob("*"):
         staged_private_tree = any(
             part in {"runtime", ".runs", "reference"} for part in path.parts

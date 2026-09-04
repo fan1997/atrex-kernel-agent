@@ -21,6 +21,7 @@ from .evaluation import (
     wait_for_terminal_job,
 )
 from .manifest import load_manifest
+from .shape_contract import exact_shapes_path
 from .staging import build_abba_stage, packed_size
 from .transport import (
     profile_payload,
@@ -166,10 +167,9 @@ def submit_profile(
             "typed"
             if backend == "agate"
             and all(path == candidate_relative for path in changed)
-            and all(
-                (reference_dir / name).is_file()
-                for name in ("reference.py", "input.py", "shapes.json")
-            )
+            and (reference_dir / "reference.py").is_file()
+            and (reference_dir / "input.py").is_file()
+            and exact_shapes_path(reference_dir).is_file()
             else "repository"
         )
         detail["route"] = route

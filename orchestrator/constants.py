@@ -44,6 +44,8 @@ IMMUTABLE_BASELINE_PATHS = (
     "input.py",
     "agent_problem.json",
     "shapes.json",
+    "shape_train.json",
+    "shape_valid.json",
     "metadata.json",
     "roofline.json",
     "workload.jsonl",

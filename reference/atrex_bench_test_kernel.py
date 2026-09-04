@@ -2,7 +2,7 @@
 """Optimizer transport adapter for the official Atrex-Bench ``run_eval``.
 
 This file deliberately contains no candidate execution, correctness comparison,
-or timing implementation.  Native ``shapes.json`` campaigns copy it to
+or timing implementation. Native ``shape_valid.json`` and legacy ``shapes.json`` campaigns copy it to
 ``test_kernel.py``; it invokes the bundled, canonical Atrex-Bench
 ``scripts/run_eval.py`` and converts that evaluator's raw ``eval_result.json``
 into the small ``RESULT_JSON`` contract consumed by the optimizer.
@@ -27,6 +27,17 @@ RESULT_PREFIX = "[test_kernel] RESULT_JSON="
 ATREX_BENCH_DIR = "atrex-bench"
 
 
+def _shapes_path(workspace: Path) -> Path:
+    modern = workspace / "shape_valid.json"
+    return modern if modern.is_file() else workspace / "shapes.json"
+
+
+def _has_public_contract(workspace: Path) -> bool:
+    return (workspace / "shape_train.json").is_file() or (
+        workspace / "agent_problem.json"
+    ).is_file()
+
+
 def _finite_number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -35,9 +46,10 @@ def _finite_number(value: object) -> float | None:
 
 
 def _expected_shape_ids(workspace: Path) -> list[str]:
-    payload = json.loads((workspace / "shapes.json").read_text(encoding="utf-8"))
+    shapes_path = _shapes_path(workspace)
+    payload = json.loads(shapes_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not payload:
-        raise RuntimeError("shapes.json must contain a non-empty object")
+        raise RuntimeError(f"{shapes_path.name} must contain a non-empty object")
 
     def sort_key(shape_id: str) -> tuple[int, object]:
         return (0, int(shape_id)) if shape_id.isdigit() else (1, shape_id)
@@ -51,8 +63,9 @@ def _shape_reference(workspace: Path, destination: Path, shape_ids: list[str]) -
         source = workspace / filename
         if source.is_file():
             shutil.copy2(source, destination / filename)
-    shapes = json.loads((workspace / "shapes.json").read_text(encoding="utf-8"))
-    (destination / "shapes.json").write_text(
+    shapes_path = _shapes_path(workspace)
+    shapes = json.loads(shapes_path.read_text(encoding="utf-8"))
+    (destination / shapes_path.name).write_text(
         json.dumps({shape_id: shapes[shape_id] for shape_id in shape_ids}),
         encoding="utf-8",
     )
@@ -205,7 +218,7 @@ def result_from_eval(payload: dict[str, Any], shape_ids: list[str]) -> dict[str,
 
 def _mask_generalized_result(workspace: Path, result: dict[str, Any]) -> dict[str, Any]:
     """Withhold hidden inputs and failure details while retaining measured shape latency."""
-    if not (workspace / "agent_problem.json").is_file():
+    if not _has_public_contract(workspace):
         return result
     masked = dict(result)
     if result.get("failures"):
@@ -308,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         # Generalized tasks return only the sanitized transport result below. Keep the
         # evaluator's raw diagnostics private because future run_eval versions may include
         # exact inputs or other sensitive per-case context in their output.
-        if not (workspace / "agent_problem.json").is_file():
+        if not _has_public_contract(workspace):
             if completed.stdout:
                 print(
                     completed.stdout,

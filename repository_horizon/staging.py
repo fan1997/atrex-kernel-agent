@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import io
 import hashlib
+import io
 import shutil
 import subprocess
 import tarfile
@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from long_horizon.protocol import atomic_write_json
 
 from .manifest import RepositoryManifest
+from .shape_contract import exact_shapes_path
 
 PRUNE_ROOTS = {"memory", "plans", "profiles", ".git", ".atrex_long_horizon"}
 
@@ -98,9 +99,15 @@ def build_abba_stage(
     runtime.mkdir()
     _archive_revision(workspace, base_commit, runtime)
     if private_reference_dir is not None:
-        for name in ("shapes.json", "metadata.json", "roofline.json"):
+        private_shapes = exact_shapes_path(private_reference_dir)
+        if not private_shapes.is_file():
+            raise FileNotFoundError(
+                f"private evaluator input is missing: {private_shapes}"
+            )
+        shutil.copy2(private_shapes, runtime / private_shapes.name)
+        for name in ("metadata.json", "roofline.json"):
             source = private_reference_dir / name
-            if name in {"shapes.json", "metadata.json"} and not source.is_file():
+            if name == "metadata.json" and not source.is_file():
                 raise FileNotFoundError(f"private evaluator input is missing: {source}")
             if source.is_file():
                 shutil.copy2(source, runtime / name)

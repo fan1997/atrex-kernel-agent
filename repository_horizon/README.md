@@ -19,7 +19,8 @@ Everything below is owned by current `main`:
 - current mode/runtime identity and immutable workspace-policy lifecycle;
 - same-allocation ABBA acceptance and squash promotion;
 - aggregation of all ABBA repeats into canonical per-shape memory;
-- public `agent_problem.json` plus evaluator-private exact production shapes;
+- public `shape_train.json` (or legacy `agent_problem.json`) plus evaluator-private
+  `shape_valid.json` (or legacy `shapes.json`);
 - complete hidden-shape coverage checks.
 
 `RepositoryHorizonCampaign` subclasses `long_horizon.campaign.LongHorizonCampaign` and does not
@@ -36,10 +37,11 @@ Repository-specific behavior remains responsible for:
 - minimized and locked support wheels;
 - repository-snapshot development evaluation and final ABBA staging.
 
-For generalized production operators, `shapes.json`, `metadata.json`, and `roofline.json` are never
-copied into the Agent worktree. They are injected only into an out-of-band verifier stage and are
-scrubbed after collection. A nominal ABBA pass is rejected unless every scheduled incumbent and
-candidate run reports every private shape id.
+For generalized production operators, the modern `shape_train.json` contract is copied into the
+Agent worktree while `shape_valid.json`, `metadata.json`, and `roofline.json` remain private. Legacy
+operators retain the equivalent `agent_problem.json` / `shapes.json` split. Exact evaluator inputs
+are injected only into an out-of-band verifier stage and scrubbed after collection. A nominal ABBA
+pass is rejected unless every scheduled incumbent and candidate run reports every private shape id.
 
 ## Run
 

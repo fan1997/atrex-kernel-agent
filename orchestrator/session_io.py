@@ -389,7 +389,10 @@ def _record_local_test_result(workspace: Path, version: str, result: dict) -> Pa
     by_shape = by_shape if isinstance(by_shape, dict) else {}
     perf["latency_us_by_shape"] = by_shape
     perf["measurement_scope"] = "real_evaluator_shapes"
-    perf["shape_ids_are_opaque"] = (workspace / "agent_problem.json").is_file()
+    perf["shape_ids_are_opaque"] = any(
+        (workspace / name).is_file()
+        for name in ("agent_problem.json", "shape_train.json")
+    )
     perf["measurement_status"] = (
         "complete" if result.get("all_pass") and by_shape else "incomplete"
     )

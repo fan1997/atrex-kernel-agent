@@ -23,6 +23,12 @@ from .lockfile import tree_digest, write_lock
 from .manifest import RepositoryManifest
 from .policy import install_repository_policy
 from .runtime import install_minimal_runtime
+from .shape_contract import (
+    SHAPE_TRAIN_FILENAME,
+    exact_shapes_path,
+    has_split_shape_contract,
+    validate_shape_train,
+)
 from .support_wheel import (
     canonical_distribution,
     extract_support_wheel,
@@ -190,7 +196,16 @@ def seed_workspace(
     shutil.copy2(manifest.adapter, workspace / "kernel.py")
     op_dir = Path(campaign.kernel_demo).resolve().parent
     generalized = getattr(campaign, "private_reference_dir", None) is not None
-    for name in agent_visible_operator_files(op_dir, generalized=generalized):
+    split_contract = has_split_shape_contract(op_dir)
+    if split_contract:
+        validate_shape_train(
+            op_dir / SHAPE_TRAIN_FILENAME,
+            private_shapes_path=exact_shapes_path(op_dir),
+        )
+        operator_files = ("reference.py", "input.py", SHAPE_TRAIN_FILENAME)
+    else:
+        operator_files = agent_visible_operator_files(op_dir, generalized=generalized)
+    for name in operator_files:
         source = op_dir / name
         if source.is_file():
             shutil.copy2(source, workspace / name)
