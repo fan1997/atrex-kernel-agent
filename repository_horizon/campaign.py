@@ -375,6 +375,12 @@ class RepositoryHorizonCampaign(LongHorizonCampaign):
         }
         return memory
 
+    def _private_shapes_path(self) -> Path | None:
+        private_reference_dir = self.base_campaign.private_reference_dir
+        if private_reference_dir is None:
+            return None
+        return exact_shapes_path(private_reference_dir)
+
     def _memory_record(
         self,
         *,

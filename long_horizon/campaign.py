@@ -469,13 +469,10 @@ class LongHorizonCampaign:
     ) -> dict[str, Any]:
         representative = _representative_candidate_result(verification)
         by_shape, shape_measurement_repeats = _candidate_shape_latencies(verification)
-        if self.base_campaign.private_reference_dir is not None:
+        private_shapes_path = self._private_shapes_path()
+        if private_shapes_path is not None:
             expected_shapes = set(
-                json.loads(
-                    (
-                        self.base_campaign.private_reference_dir / "shapes.json"
-                    ).read_text(encoding="utf-8")
-                )
+                json.loads(private_shapes_path.read_text(encoding="utf-8"))
             )
             measured_shapes = set(by_shape) if isinstance(by_shape, dict) else set()
             if measured_shapes != expected_shapes:
@@ -559,6 +556,13 @@ class LongHorizonCampaign:
             "git_commit_hash": candidate_commit,
         }
 
+    def _private_shapes_path(self) -> Path | None:
+        """Return the evaluator-owned exact-shape contract, when configured."""
+        private_reference_dir = self.base_campaign.private_reference_dir
+        if private_reference_dir is None:
+            return None
+        return private_reference_dir / "shapes.json"
+
     def _outcome_memory_record(
         self,
         *,
@@ -587,13 +591,10 @@ class LongHorizonCampaign:
         representative = _representative_candidate_result(verification)
         by_shape, shape_measurement_repeats = _candidate_shape_latencies(verification)
         expected_shape_ids: set[str] | None = None
-        if self.base_campaign.private_reference_dir is not None:
+        private_shapes_path = self._private_shapes_path()
+        if private_shapes_path is not None:
             expected_shape_ids = set(
-                json.loads(
-                    (
-                        self.base_campaign.private_reference_dir / "shapes.json"
-                    ).read_text(encoding="utf-8")
-                )
+                json.loads(private_shapes_path.read_text(encoding="utf-8"))
             )
         expected_shape_count = (
             len(expected_shape_ids) if expected_shape_ids is not None else None
